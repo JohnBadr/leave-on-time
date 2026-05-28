@@ -74,7 +74,7 @@ def fetch_and_store_routes(system_id):
         cursor.execute('''
             INSERT OR IGNORE INTO route_graphs(system_id, route_id, route_name, color)
             VALUES(?, ?, ?, ?)
-        ''', (system.id, route.id, route.name, route.color))
+        ''', (system.id, route.myid, route.name, route.groupColor))
     conn.commit()
 
 #gets all stops per system (will be filtered later so that each route has its stops assigned to it)
@@ -107,8 +107,8 @@ def compute_stop_pairs(system_id):
     for route in routes:  # Get stops for this route in correct order
         route_stops=[]
         for stop in stops:
-            if route.id in stop.routesAndPositions:
-                position = stop.routesAndPositions[route.id][0]
+            if route.myid in stop.routesAndPositions:
+                position = stop.routesAndPositions[route.myid][0]
                 route_stops.append((position,stop))
         
         #sorts by position
@@ -122,7 +122,7 @@ def compute_stop_pairs(system_id):
         cursor.execute('''
             SELECT id FROM route_graphs 
             WHERE system_id = ? AND route_id = ?
-        ''', (system_id, route.id))
+        ''', (system_id, route.myid))
         row = cursor.fetchone()
         if row is None:
             continue
@@ -167,4 +167,7 @@ def run():
         precompute_system(system_id)
         print(f"Done: {name}")
 
-run()
+# run()
+
+precompute_system(2343)
+print("USF done")
