@@ -1,4 +1,4 @@
-import passiogo
+from passiogo_fix import passiogo
 import sqlite3
 import time
 from datetime import datetime, date

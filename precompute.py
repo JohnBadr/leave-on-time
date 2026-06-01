@@ -1,7 +1,7 @@
 from datetime import datetime
 import sqlite3
 import time
-import passiogo
+from passiogo_fix import passiogo
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed  # CLAUDE: ThreadPoolExecutor runs multiple OSRM requests at the same time instead of one by one; as_completed lets us collect results as they finish
 
@@ -88,9 +88,9 @@ def fetch_and_store_routes(system):
     routes = system.getRoutes()
 
     # CLAUDE: PassioGo returns multiple route objects with the same name but different myid values
-    # (variants like detour/express versions of the same route). We only want one DB row per name,
-    # so we pick one representative per unique name — the one with the most stops wins since it's
-    # the most complete variant and best represents the full route path.
+    # — the reason for this is unclear, possibly direction or schedule differences internal to PassioGo.
+    # We only want one DB row per name, so we pick one representative per unique name — the one with
+    # the most stops wins since it's the most complete variant and best represents the full route path.
     stops = system.getStops()
     name_to_best_route = {}
     for route in routes:
@@ -99,11 +99,11 @@ def fetch_and_store_routes(system):
             1 for stop in stops
             if route_key in {str(k) for k in getattr(stop, "routesAndPositions", {}).keys()}
         )
-        existing = name_to_best_route.get(route.name)
-        if existing is None or stop_count > existing[1]:
+        existing = name_to_best_route.get(route.name)                           #note: they will be stores like this in the dict basically (str name): tuple(route_obj, stop_count):
+        if existing is None or stop_count > existing[1]:                        # { "Green": (route_obj, 28), "Blue": (route_obj, 15), "Red": (route_obj, 30) }
             name_to_best_route[route.name] = (route, stop_count)
 
-    best_routes = [route for route, _ in name_to_best_route.values()]
+    best_routes = [route for route, _ in name_to_best_route.values()] #keeps only the route objects, discarding the stop counts since we don't need them anymore
 
     for route in best_routes:
         cursor.execute(
