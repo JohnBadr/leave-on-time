@@ -5,10 +5,9 @@ from geopy.distance import geodesic
 from apscheduler.schedulers.background import BackgroundScheduler
 
 route_conn = sqlite3.connect("routegraph.db", check_same_thread=False)
-route_cursor = route_conn.cursor()
-
 track_conn = sqlite3.connect("tracking.db", check_same_thread=False)
-track_cursor = track_conn.cursor()
+
+# no global cursors — every function creates and closes its own
 
 USF_SYSTEM_ID = 2343
 
@@ -33,29 +32,36 @@ tracked_vehicles = {
 #   }
 }
 
-track_cursor.executescript("""
-    CREATE TABLE IF NOT EXISTS tracked_systems (
-        system_id   INTEGER PRIMARY KEY,
-        system_name TEXT
-    );
+# ── DB SETUP ──────────────────────────────────────────────────────────────────
 
-    CREATE TABLE IF NOT EXISTS tracked_routes (
-        system_id    INTEGER,
-        route_name   TEXT,
-        active_users INTEGER DEFAULT 1,
-        PRIMARY KEY (system_id, route_name),
-        FOREIGN KEY (system_id) REFERENCES tracked_systems (system_id)
-    );
-""")
-track_conn.commit()
+def setup_db():
+    cursor = track_conn.cursor()
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS tracked_systems (
+            system_id   INTEGER PRIMARY KEY,
+            system_name TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS tracked_routes (
+            system_id    INTEGER,
+            route_name   TEXT,
+            active_users INTEGER DEFAULT 1,
+            PRIMARY KEY (system_id, route_name),
+            FOREIGN KEY (system_id) REFERENCES tracked_systems (system_id)
+        );
+    """)
+    track_conn.commit()
+    cursor.close()
 
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
 def load_tracked_systems():
-    track_cursor.execute("SELECT system_id FROM tracked_systems")
-    for (system_id,) in track_cursor.fetchall():
+    cursor = track_conn.cursor()
+    cursor.execute("SELECT system_id FROM tracked_systems")
+    for (system_id,) in cursor.fetchall():
         if system_id not in tracked_systems:
             tracked_systems[system_id] = passiogo.getSystemFromID(system_id)
+    cursor.close()
 
 # ── SYSTEM ────────────────────────────────────────────────────────────────────
 
@@ -63,47 +69,57 @@ def get_system(system_id=USF_SYSTEM_ID):
     if system_id not in tracked_systems:
         system = passiogo.getSystemFromID(system_id)
         tracked_systems[system_id] = system
-        track_cursor.execute("""
+        cursor = track_conn.cursor()
+        cursor.execute("""
             INSERT OR IGNORE INTO tracked_systems (system_id, system_name)
             VALUES (?, ?)
         """, (system_id, system.name))
         track_conn.commit()
+        cursor.close()
     return tracked_systems[system_id]
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
 
 def get_routes(system):
-    route_cursor.execute("""
+    cursor = route_conn.cursor()
+    cursor.execute("""
         SELECT route_name
         FROM route_graphs
         WHERE system_id = ?
         ORDER BY route_name
     """, (system.id,))
-    return route_cursor.fetchall()
+    results = cursor.fetchall()
+    cursor.close()
+    return results
 
 def add_tracked_route(system, route_name):
-    track_cursor.execute("""
+    cursor = track_conn.cursor()
+    cursor.execute("""
         INSERT INTO tracked_routes (system_id, route_name, active_users)
         VALUES (?, ?, 1)
         ON CONFLICT (system_id, route_name)
         DO UPDATE SET active_users = active_users + 1
     """, (system.id, route_name))
     track_conn.commit()
+    cursor.close()
 
 def remove_tracked_route(system, route_name):
-    track_cursor.execute("""
+    cursor = track_conn.cursor()
+    cursor.execute("""
         UPDATE tracked_routes
         SET active_users = active_users - 1
         WHERE system_id = ? AND route_name = ?
     """, (system.id, route_name))
-    track_cursor.execute("""
+    cursor.execute("""
         DELETE FROM tracked_routes
         WHERE system_id = ? AND route_name = ? AND active_users <= 0
     """, (system.id, route_name))
     track_conn.commit()
+    cursor.close()
 
 def get_stop_sequence(system_id, route_name):
-    route_cursor.execute("""
+    cursor = route_conn.cursor()
+    cursor.execute("""
         SELECT sp.position, sp.origin_stop_id, sp.dest_stop_id,
                sp.bearing, sp.is_complex_zone,
                s1.lat, s1.lon, s1.name,
@@ -115,7 +131,9 @@ def get_stop_sequence(system_id, route_name):
         WHERE rg.system_id = ? AND rg.route_name = ?
         ORDER BY sp.position
     """, (system_id, route_name))
-    return route_cursor.fetchall()
+    results = cursor.fetchall()
+    cursor.close()
+    return results
 
 # ── MATH HELPERS ──────────────────────────────────────────────────────────────
 
@@ -137,7 +155,6 @@ def cold_start_tick(system_id, vehicle_id, state, v):
         state['coords1'] = coords
         return
 
-    # compute speed from last coords
     distance = get_distance_m(state['coords1'][0], state['coords1'][1], v_lat, v_lon)
     speed = (distance / 5) * 3.6  # m/s → km/h, 5s interval
     state['coords1'] = coords
@@ -147,8 +164,8 @@ def cold_start_tick(system_id, vehicle_id, state, v):
         state['last_speeds'].pop(0)
     if len(state['last_speeds']) < 3:
         return
-    avg_speed = sum(state['last_speeds']) / len(state['last_speeds'])
 
+    avg_speed = sum(state['last_speeds']) / len(state['last_speeds'])
     elapsed = time.time() - state['cold_start_time']
 
     if elapsed < 120:
@@ -161,6 +178,11 @@ def cold_start_tick(system_id, vehicle_id, state, v):
         tier = 4
 
     v_heading = float(v.calculatedCourse) if v.calculatedCourse else None
+    if v_heading is not None:
+        state['headings'].append(v_heading)
+        if len(state['headings']) > 2:
+            state['headings'].pop(0)
+
     stop_sequence = get_stop_sequence(system_id, state['route_name'])
 
     # TODO: tier 1 — within 25m + speed < 15 + not complex zone + heading match < 45°
@@ -196,13 +218,14 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
 # ── JOB 1: ROSTER MANAGER (every 90s) ────────────────────────────────────────
 
 def roster_check():
-    track_cursor.execute("SELECT system_id, route_name FROM tracked_routes")
-    routes_to_track = track_cursor.fetchall()
+    cursor = track_conn.cursor()
+    cursor.execute("SELECT system_id, route_name FROM tracked_routes")
+    routes_to_track = cursor.fetchall()
 
     for system_id, route_name in routes_to_track:
         system = tracked_systems.get(system_id)
         if system is None:
-            continue
+            continue  # cursor stays open, loop continues
 
         fresh_vehicles = system.getVehicles()
         fresh_route_vehicles = [v for v in fresh_vehicles if v.routeName == route_name]
@@ -248,6 +271,8 @@ def roster_check():
             del tracked_vehicles[system_id][vehicle_id]
             print(f"  - Vehicle {vehicle_id} disappeared → removed")
 
+    cursor.close()  # closed once at the very end, never inside the loop
+
 # ── JOB 2: GLOBAL TICKER (every 5s) ──────────────────────────────────────────
 
 def global_tick():
@@ -286,29 +311,26 @@ scheduler.add_job(global_tick,  'interval', seconds=5,  id='global_tick')
 # ── BOOT ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # 1. Repopulate the in-memory tracked_systems dict from the DB
+    setup_db()
     load_tracked_systems()
 
-    # 2. Query the DB for all routes we are supposed to be actively tracking
-    track_cursor.execute("SELECT system_id, route_name FROM tracked_routes")
-    active_routes = track_cursor.fetchall()
+    boot_cursor = track_conn.cursor()
+    boot_cursor.execute("SELECT system_id, route_name FROM tracked_routes")
+    active_routes = boot_cursor.fetchall()
+    boot_cursor.close()
 
     if active_routes:
         print(f"Found {len(active_routes)} routes in DB. Activating tracking...")
         for system_id, route_name in active_routes:
-            # This ensures the system object is initialized in tracked_systems
             system_obj = get_system(system_id)
             print(f" -> Booting tracking for System: {system_id}, Route: {route_name}")
     else:
-        # Fallback: If the DB is completely fresh/empty, seed it with your defaults
         print("Database empty. Seeding default USF Red route...")
         system = get_system(USF_SYSTEM_ID)
         add_tracked_route(system, "Red")
 
-    # 3. Fire the initial roster check sync to populate vehicles immediately
     roster_check()
 
-    # 4. Fire up the clocks
     scheduler.start()
     print("Scheduler started. Press Ctrl+C to stop.")
 
