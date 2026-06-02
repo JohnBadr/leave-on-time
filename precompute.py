@@ -265,3 +265,5 @@ if __name__ == "__main__":
     # precompute_system(2343)
     # print("Precomputation complete for system 2343. Check the database for results.")
     conn.close()
+
+#REMINDER: NEED TO ADD LOGIC THAT PRECOMPUTES ROUTES THAT HAVE NOT BEEN PRECOMPUTED AND THEY NEED TO BE USED BY THE USER
