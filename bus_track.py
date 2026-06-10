@@ -161,7 +161,11 @@ def project_onto_shape(lat, lon, shape_points):
         vx = (lon - lon_A) * scale
         vy=(lat - lat_A)
 
-        t=(vx*dx + vy*dy)/(dx*dx + dy*dy)
+        denom = dx*dx + dy*dy
+        if denom == 0:
+            continue
+
+        t = (vx*dx + vy*dy) / denom
         t = max(0.0, min(1.0, t))
         closest_lat = lat_A + t * (lat_B - lat_A)
         closest_lon = lon_A + t * (lon_B - lon_A)
@@ -174,8 +178,19 @@ def project_onto_shape(lat, lon, shape_points):
             best_t = t
     progress_pct = (best_segment_idx + best_t) / (len(shape_points) - 1)
 
-    return best_error_m, progress_pct
-        
+    lon_A, lat_A = shape_points[best_segment_idx]
+    lon_B, lat_B = shape_points[best_segment_idx + 1]
+    local_bearing = compute_bearing(lat_A, lon_A, lat_B, lon_B)
+
+    return best_error_m, progress_pct, local_bearing
+    
+
+def compute_bearing(lat1, lon1, lat2, lon2):
+    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+    dlon = lon2 - lon1
+    x = math.sin(dlon) * math.cos(lat2)
+    y = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
+    return (math.degrees(math.atan2(x, y)) + 360) % 360
 
 # 1. find t          → WHERE on the segment is the closest point
 # 2. find the point  → WHAT are its coordinates (using t)
@@ -225,7 +240,7 @@ def cold_start_tick(system_id, vehicle_id, state, v):
 
     # 2. For each stop pair:
     # → project bus onto shape → get error_m
-    # → check angle_diff(v_heading, pair_bearing) < 45°
+    # → check angle_diff(v_heading, local_bearing) < 45°
     # → if heading matches: record (error_m, position_index) as candidate
 
     # 3. Pick candidate with lowest error_m → that's the index
@@ -243,12 +258,12 @@ def cold_start_tick(system_id, vehicle_id, state, v):
 
     for sp in stop_sequence:
         shape_points = json.loads(sp[5])
-        error_m, _ = project_onto_shape(v_lat, v_lon, shape_points)
+        error_m, _, local_bearing = project_onto_shape(v_lat, v_lon, shape_points)
 
         if v_heading is not None:
-            if angle_diff(v_heading, sp[3]) > 45:
+            if angle_diff(v_heading, local_bearing) > 45:
                 continue
-        elif v_heading is None and elapsed < 120:
+        elif v_heading is None and elapsed < 300:
             continue
 
         if error_m >= best_error_m:
@@ -291,11 +306,17 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
     if len(state['last_speeds']) > 300:
         state['last_speeds'].pop(0)
 
+    # This loop keeps advancing the segment index if the bus has overshot it.
+    # 'loops_checked' resets to 0 every 5 seconds. Its sole purpose is a safety 
+    # circuit breaker: if a bus leaves the route (e.g., goes to the garage), 
+    # it prevents an infinite loop from cycling through the route forever 
+    # and freezing the script.
+    
     loops_checked = 0
     while loops_checked < len(stop_sequence):
         current_pair = stop_sequence[state['index']]
         shape_points = json.loads(current_pair[5])
-        _, progress_pct = project_onto_shape(v_lat, v_lon, shape_points)
+        _, progress_pct, _ = project_onto_shape(v_lat, v_lon, shape_points)
         calculated_progress_m = progress_pct * current_pair[6]
 
         if calculated_progress_m < current_pair[6] - 10:
@@ -304,10 +325,12 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
         state['index'] = (state['index'] + 1) % len(stop_sequence)
         state['last_update_time'] = time.time()
         loops_checked += 1
-
+    
     if time.time() - state['last_update_time'] > 180 and speed > 5:
         state['status'] = 'UNKNOWN'
-        state['cold_start_time'] = time.time() 
+        state['cold_start_time'] = time.time()
+
+    print(f"  Vehicle {vehicle_id} — index: {state['index']} | pair: {current_pair[9]} → {current_pair[12]}") 
 
 # ── JOB 1: ROSTER MANAGER (every 90s) ────────────────────────────────────────
 
@@ -422,6 +445,8 @@ if __name__ == "__main__":
         print("Database empty. Seeding default USF Red route...")
         system = get_system(USF_SYSTEM_ID)
         add_tracked_route(system, "Red")
+        add_tracked_route(system, "Purple")
+        add_tracked_route(system, "Green")
 
     roster_check()
 
