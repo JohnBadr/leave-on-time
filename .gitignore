@@ -6,6 +6,7 @@ COMMANDTORUNDOCKERSERVER.txt
 bus_track_logic.txt
 
 bullrunner.db
+tracking.db
 
 temp.py
 verify_routes.py

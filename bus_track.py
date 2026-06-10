@@ -1,5 +1,7 @@
 import sqlite3
 import time
+import json
+import math
 from passiogo_fix import passiogo
 from geopy.distance import geodesic
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -16,8 +18,8 @@ tracked_systems = {
 }
 
 tracked_vehicles = {
-#   system_id: {
-#       vehicle_id: {
+#   'system_id': {
+#       'vehicle_id': {
 #           'route_name': 'Red',
 #           'status': 'UNKNOWN',
 #           'index': None,
@@ -26,8 +28,8 @@ tracked_vehicles = {
 #           'last_speeds': [],
 #           'coords1': (),
 #           'vehicle_obj': <v>,
-#           'tick_count': 0,
 #           'cold_start_time': time.time(),
+#           'last_update_time': time.time(),
 #       }
 #   }
 }
@@ -121,7 +123,7 @@ def get_stop_sequence(system_id, route_name):
     cursor = route_conn.cursor()
     cursor.execute("""
         SELECT sp.position, sp.origin_stop_id, sp.dest_stop_id,
-               sp.bearing, sp.is_complex_zone,
+               sp.bearing, sp.is_complex_zone, sp.shape_points, sp.road_distance_m,
                s1.lat, s1.lon, s1.name,
                s2.lat, s2.lon, s2.name
         FROM stop_pairs sp
@@ -144,6 +146,40 @@ def angle_diff(a, b):
     diff = abs(a - b) % 360
     return diff if diff <= 180 else 360 - diff
 
+def project_onto_shape(lat, lon, shape_points):
+    best_error_m=float('inf')
+    best_segment_idx=0
+    best_t=0
+    for i in range(len(shape_points)-1):
+        A=shape_points[i]
+        B=shape_points[i+1]
+        lon_A, lat_A = A
+        lon_B, lat_B = B
+        scale = math.cos(math.radians((lat_A + lat_B) / 2))
+        dx = (lon_B - lon_A) * scale
+        dy = lat_B - lat_A
+        vx = (lon - lon_A) * scale
+        vy=(lat - lat_A)
+
+        t=(vx*dx + vy*dy)/(dx*dx + dy*dy)
+        t = max(0.0, min(1.0, t))
+        closest_lat = lat_A + t * (lat_B - lat_A)
+        closest_lon = lon_A + t * (lon_B - lon_A)
+
+        error_m = get_distance_m(lat, lon, closest_lat, closest_lon)
+
+        if error_m < best_error_m:
+            best_error_m = error_m
+            best_segment_idx = i
+            best_t = t
+    progress_pct = (best_segment_idx + best_t) / (len(shape_points) - 1)
+
+    return best_error_m, progress_pct
+        
+
+# 1. find t          → WHERE on the segment is the closest point
+# 2. find the point  → WHAT are its coordinates (using t)
+# 3. measure error   → HOW FAR is the bus from that point
 # ── COLD START ────────────────────────────────────────────────────────────────
 
 def cold_start_tick(system_id, vehicle_id, state, v):
@@ -165,15 +201,14 @@ def cold_start_tick(system_id, vehicle_id, state, v):
     if len(state['last_speeds']) < 3:
         return
 
-    avg_speed = sum(state['last_speeds']) / len(state['last_speeds'])
     elapsed = time.time() - state['cold_start_time']
 
     if elapsed < 120:
         tier = 1
     elif elapsed < 180:
-        tier = 2
+        tier = 2 #heading is not used anymore aka cant seem to get it.
     elif elapsed < 300:
-        tier = 3
+        tier = 3 
     else:
         tier = 4
 
@@ -185,11 +220,47 @@ def cold_start_tick(system_id, vehicle_id, state, v):
 
     stop_sequence = get_stop_sequence(system_id, state['route_name'])
 
-    # TODO: tier 1 — within 25m + speed < 15 + not complex zone + heading match < 45°
-    # TODO: tier 2 — within 25m + not complex zone + heading match < 45°
-    # TODO: tier 3 — within 25m + heading match < 45°
-    # TODO: tier 4 — closest stop, no conditions
-    # when resolved → call _resolve_cold_start(system_id, vehicle_id, index, tier)
+    # 1. Get stop sequence for this route from DB
+    # (position, bearing, shape_points, road_distance_m for each pair)
+
+    # 2. For each stop pair:
+    # → project bus onto shape → get error_m
+    # → check angle_diff(v_heading, pair_bearing) < 45°
+    # → if heading matches: record (error_m, position_index) as candidate
+
+    # 3. Pick candidate with lowest error_m → that's the index
+
+    # 4. If no heading available (speed too low):
+    # → just pick lowest error_m regardless of heading
+    # → mark as lower confidence
+
+    # 5. _resolve_cold_start(system_id, vehicle_id, index, tier)
+    best_candidate = None
+    best_error_m = 20.0
+
+    if speed < 5:
+        v_heading = None
+
+    for sp in stop_sequence:
+        shape_points = json.loads(sp[5])
+        error_m, _ = project_onto_shape(v_lat, v_lon, shape_points)
+
+        if v_heading is not None:
+            if angle_diff(v_heading, sp[3]) > 45:
+                continue
+        elif v_heading is None and elapsed < 120:
+            continue
+
+        if error_m >= best_error_m:
+            continue
+
+        best_candidate = sp[0]
+        best_error_m = error_m
+
+    if best_candidate is None:
+        return
+    else:
+        _resolve_cold_start(system_id, vehicle_id, int(best_candidate), tier)
 
 def _resolve_cold_start(system_id, vehicle_id, index, tier):
     state = tracked_vehicles[system_id][vehicle_id]
@@ -197,23 +268,46 @@ def _resolve_cold_start(system_id, vehicle_id, index, tier):
     state['status'] = 'DETERMINED'
     state['confidence'] = tier
     state['cold_start_time'] = None
-    state['tick_count'] = 0
     print(f"  ✓ Vehicle {vehicle_id} resolved → index {index} (tier {tier} confidence)")
 
 # ── LIVE TRACKING ─────────────────────────────────────────────────────────────
 
 def live_tracking_tick(system_id, vehicle_id, state, v):
-    # only run every 3rd tick → effectively every 15s
-    state['tick_count'] = state.get('tick_count', 0) + 1
-    if state['tick_count'] % 3 != 0:
+    # runs every 5s — shape projection is pure local math, no API calls needed (except bus lat/lon)
+    v_lat = float(v.latitude)
+    v_lon = float(v.longitude)
+    coords = (v_lat, v_lon)
+
+    if not state['coords1']:
+        state['coords1'] = coords
         return
 
-    # TODO: rule 1 — standard arrival bubble (< 25m to current target stop → advance +1)
-    # TODO: rule 2 — escape / missed trigger (< 100m, was decreasing, now increasing, got within 40m → advance +1)
-    # TODO: rule 3 — quantum leap (within 50m of any stop 1-6 ahead → snap forward)
-    # TODO: auto reset — no rule fired in > 3min while moving → reset to UNKNOWN
+    stop_sequence = get_stop_sequence(system_id, state['route_name'])
+    distance = get_distance_m(state['coords1'][0], state['coords1'][1], v_lat, v_lon)
+    speed = (distance / 5) * 3.6
+    state['coords1'] = coords  # update coords1
+    
+    state['last_speeds'].append(speed)
+    if len(state['last_speeds']) > 300:
+        state['last_speeds'].pop(0)
 
-    pass
+    loops_checked = 0
+    while loops_checked < len(stop_sequence):
+        current_pair = stop_sequence[state['index']]
+        shape_points = json.loads(current_pair[5])
+        _, progress_pct = project_onto_shape(v_lat, v_lon, shape_points)
+        calculated_progress_m = progress_pct * current_pair[6]
+
+        if calculated_progress_m < current_pair[6] - 10:
+            break  # bus is still on this segment
+
+        state['index'] = (state['index'] + 1) % len(stop_sequence)
+        state['last_update_time'] = time.time()
+        loops_checked += 1
+
+    if time.time() - state['last_update_time'] > 180 and speed > 5:
+        state['status'] = 'UNKNOWN'
+        state['cold_start_time'] = time.time() 
 
 # ── JOB 1: ROSTER MANAGER (every 90s) ────────────────────────────────────────
 
@@ -247,8 +341,8 @@ def roster_check():
                     'last_speeds': [],
                     'coords1': (),
                     'vehicle_obj': v,
-                    'tick_count': 0,
                     'cold_start_time': time.time(),
+                    'last_update_time': time.time(),
                 }
                 print(f"  + New vehicle {v.id} on {route_name} → UNKNOWN")
 
@@ -262,8 +356,8 @@ def roster_check():
                     'last_speeds': [],
                     'coords1': (),
                     'vehicle_obj': v,
-                    'tick_count': 0,
                     'cold_start_time': time.time(),
+                    'last_update_time': time.time(),
                 })
                 print(f"  ↺ Vehicle {v.id} changed route → UNKNOWN")
 
