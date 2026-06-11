@@ -30,6 +30,10 @@ tracked_vehicles = {
 #           'vehicle_obj': <v>,
 #           'cold_start_time': time.time(),
 #           'last_update_time': time.time(),
+#           'moving': None,
+#           'last_moved': time.time(),
+#           'stop_logging': False,
+#           'stop_cleanup_done': False,
 #       }
 #   }
 }
@@ -208,13 +212,30 @@ def cold_start_tick(system_id, vehicle_id, state, v):
 
     distance = get_distance_m(state['coords1'][0], state['coords1'][1], v_lat, v_lon)
     speed = (distance / 5) * 3.6  # m/s → km/h, 5s interval
+    if speed > 1:
+        state['moving'] = True
+        state['last_moved'] = time.time()
+    else:
+        state['moving'] = False
+    
+    if time.time() - state['last_moved'] >= 280 and not state['moving'] and not state['stop_logging']:
+        state['stop_logging'] = True
+        if not state['stop_cleanup_done']:
+            state['last_speeds'] = state['last_speeds'][:-56]
+            state['stop_cleanup_done'] = True
+
+    if state['moving']:
+        state['stop_logging'] = False
+        state['stop_cleanup_done'] = False  # reset so next stop cleans up too
+    
     state['coords1'] = coords
 
-    state['last_speeds'].append(speed)
-    if len(state['last_speeds']) > 300:
-        state['last_speeds'].pop(0)
-    if len(state['last_speeds']) < 3:
-        return
+    if state['stop_logging'] == False:
+        state['last_speeds'].append(speed)
+        if len(state['last_speeds']) > 300:
+            state['last_speeds'].pop(0)
+        if len(state['last_speeds']) < 3:
+            return
 
     elapsed = time.time() - state['cold_start_time']
 
@@ -300,11 +321,31 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
     stop_sequence = get_stop_sequence(system_id, state['route_name'])
     distance = get_distance_m(state['coords1'][0], state['coords1'][1], v_lat, v_lon)
     speed = (distance / 5) * 3.6
+
+    if speed > 1:
+        state['moving'] = True
+        state['last_moved'] = time.time()
+    else:
+        state['moving'] = False
+    
+    if time.time() - state['last_moved'] >= 280 and not state['moving'] and not state['stop_logging']:
+        state['stop_logging'] = True
+        if not state['stop_cleanup_done']:
+            state['last_speeds'] = state['last_speeds'][:-56]
+            state['stop_cleanup_done'] = True
+
+    if state['moving']:
+        state['stop_logging'] = False
+        state['stop_cleanup_done'] = False  # reset so next stop cleans up too
+        
     state['coords1'] = coords  # update coords1
     
-    state['last_speeds'].append(speed)
-    if len(state['last_speeds']) > 300:
-        state['last_speeds'].pop(0)
+    if state['stop_logging'] == False:
+        state['last_speeds'].append(speed)
+        if len(state['last_speeds']) > 300:
+            state['last_speeds'].pop(0)
+        if len(state['last_speeds']) < 3:
+            return
 
     # This loop keeps advancing the segment index if the bus has overshot it.
     # 'loops_checked' resets to 0 every 5 seconds. Its sole purpose is a safety 
@@ -366,6 +407,10 @@ def roster_check():
                     'vehicle_obj': v,
                     'cold_start_time': time.time(),
                     'last_update_time': time.time(),
+                    'moving': None,
+                    'last_moved': time.time(),
+                    'stop_logging': False,
+                    'stop_cleanup_done': False,
                 }
                 print(f"  + New vehicle {v.id} on {route_name} → UNKNOWN")
 
@@ -381,6 +426,10 @@ def roster_check():
                     'vehicle_obj': v,
                     'cold_start_time': time.time(),
                     'last_update_time': time.time(),
+                    'moving': None,
+                    'last_moved': time.time(),
+                    'stop_logging': False,
+                    'stop_cleanup_done': False,
                 })
                 print(f"  ↺ Vehicle {v.id} changed route → UNKNOWN")
 
