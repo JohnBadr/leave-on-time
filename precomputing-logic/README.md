@@ -1,0 +1,1 @@
+## This is the logic I used for precomputing routes. At first I ran precompute.py but noticed I needed more things in my db thus why I wrote migrate.py and migrate_shapes.py
