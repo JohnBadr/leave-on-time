@@ -1,5 +1,6 @@
 venv
 other-stuff
+__pycache__
 
 
 problems-solved-log.txt
