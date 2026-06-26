@@ -2,10 +2,9 @@ from utils import get_distance_m, compute_bearing, angle_diff, project_onto_shap
 import sqlite3
 import time
 import json
-import math
 from passiogo_fix import passiogo
-from geopy.distance import geodesic
 from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
 
 route_conn = sqlite3.connect("routegraph.db", check_same_thread=False)
 track_conn = sqlite3.connect("tracking.db", check_same_thread=False)
@@ -39,6 +38,14 @@ tracked_vehicles = {
 #   }
 }
 
+stop_sequence_cache = {
+#   (system_id, route_name): [
+#       (position, origin_stop_id, dest_stop_id, bearing, is_complex_zone, shape_points, road_distance_m, road_duration_s, s1_lat, s1_lon, s1_name, s2_lat, s2_lon, s2_name),
+#       (position, origin_stop_id, dest_stop_id, bearing, is_complex_zone, shape_points, road_distance_m, road_duration_s, s1_lat, s1_lon, s1_name, s2_lat, s2_lon, s2_name),
+#       ...
+#   ]
+}
+
 # ── DB SETUP ──────────────────────────────────────────────────────────────────
 
 def setup_db():
@@ -69,6 +76,15 @@ def load_tracked_systems():
         if system_id not in tracked_systems:
             tracked_systems[system_id] = passiogo.getSystemFromID(system_id)
     cursor.close()
+
+def preload_stop_sequences():
+    cursor = track_conn.cursor()
+    cursor.execute("SELECT system_id, route_name FROM tracked_routes")
+    routes = cursor.fetchall()
+    cursor.close()
+    for system_id, route_name in routes:
+        stop_sequence_cache[(system_id, route_name)] = get_stop_sequence(system_id, route_name)
+    print(f"Cached {len(stop_sequence_cache)} route stop sequences")
 
 # ── SYSTEM ────────────────────────────────────────────────────────────────────
 
@@ -109,6 +125,9 @@ def add_tracked_route(system, route_name):
     """, (system.id, route_name))
     track_conn.commit()
     cursor.close()
+
+    if (system.id, route_name) not in stop_sequence_cache:
+        stop_sequence_cache[(system.id, route_name)] = get_stop_sequence(system.id, route_name)
 
 def remove_tracked_route(system, route_name):
     cursor = track_conn.cursor()
@@ -197,7 +216,7 @@ def cold_start_tick(system_id, vehicle_id, state, v):
         if len(state['headings']) > 2:
             state['headings'].pop(0)
 
-    stop_sequence = get_stop_sequence(system_id, state['route_name'])
+    stop_sequence = stop_sequence_cache[(system_id, state['route_name'])]
 
     # 1. Get stop sequence for this route from DB
     # (position, bearing, shape_points, road_distance_m for each pair)
@@ -261,7 +280,7 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
         state['coords1'] = coords
         return
 
-    stop_sequence = get_stop_sequence(system_id, state['route_name'])
+    stop_sequence = stop_sequence_cache[(system_id, state['route_name'])]
     distance = get_distance_m(state['coords1'][0], state['coords1'][1], v_lat, v_lon)
     speed = (distance / 5) * 3.6
 
@@ -314,7 +333,7 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
         state['status'] = 'UNKNOWN'
         state['cold_start_time'] = time.time()
 
-    print(f"  Vehicle {vehicle_id} — index: {state['index']} | pair: {current_pair[9]} → {current_pair[12]}") 
+    print(f"  Vehicle {vehicle_id} — index: {state['index']} | pair: {current_pair[10]} → {current_pair[13]}") 
 
 # ── JOB 1: ROSTER MANAGER (every 90s) ────────────────────────────────────────
 
@@ -415,13 +434,14 @@ def global_tick():
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(roster_check, 'interval', seconds=90, id='roster_check')
-scheduler.add_job(global_tick,  'interval', seconds=5,  id='global_tick')
+scheduler.add_job(global_tick,  'interval', seconds=5,  id='global_tick', max_instances=3)
 
 # ── BOOT ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     setup_db()
     load_tracked_systems()
+    preload_stop_sequences()
 
     boot_cursor = track_conn.cursor()
     boot_cursor.execute("SELECT system_id, route_name FROM tracked_routes")
