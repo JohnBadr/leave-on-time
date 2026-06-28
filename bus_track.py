@@ -1,3 +1,4 @@
+from logger import get_period_type
 from utils import get_distance_m, compute_bearing, angle_diff, project_onto_shape
 import sqlite3
 import time
@@ -8,6 +9,7 @@ from datetime import datetime
 
 route_conn = sqlite3.connect("routegraph.db", check_same_thread=False)
 track_conn = sqlite3.connect("tracking.db", check_same_thread=False)
+obs_conn = sqlite3.connect("observations.db", check_same_thread=False)
 
 # no global cursors — every function creates and closes its own
 
@@ -34,6 +36,8 @@ tracked_vehicles = {
 #           'last_moved': time.time(),
 #           'stop_logging': False,
 #           'stop_cleanup_done': False,
+#           'progress_pct': 0.0,
+#           'segment_entry_time': time.time(),
 #       }
 #   }
 }
@@ -42,6 +46,14 @@ stop_sequence_cache = {
 #   (system_id, route_name): [
 #       (position, origin_stop_id, dest_stop_id, bearing, is_complex_zone, shape_points, road_distance_m, road_duration_s, s1_lat, s1_lon, s1_name, s2_lat, s2_lon, s2_name),
 #       (position, origin_stop_id, dest_stop_id, bearing, is_complex_zone, shape_points, road_distance_m, road_duration_s, s1_lat, s1_lon, s1_name, s2_lat, s2_lon, s2_name),
+#       ...
+#   ]
+}
+
+segment_observations = {
+#   (system_id, route_name, segment_index): [
+#       (timestamp, observed_duration_s, osrm_duration_s, ratio),
+#       (timestamp, observed_duration_s, osrm_duration_s, ratio),
 #       ...
 #   ]
 }
@@ -67,6 +79,23 @@ def setup_db():
     track_conn.commit()
     cursor.close()
 
+    cursor = obs_conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS segment_observations (
+            system_id           INTEGER,
+            route_name          TEXT,
+            segment_index       INTEGER,
+            observed_duration_s REAL,
+            osrm_duration_s     REAL,
+            ratio               REAL,
+            timestamp           REAL,
+            period_type         TEXT,
+            PRIMARY KEY (system_id, route_name, segment_index, timestamp)
+        )
+    """)
+    obs_conn.commit()
+    cursor.close()
+
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
 def load_tracked_systems():
@@ -85,6 +114,31 @@ def preload_stop_sequences():
     for system_id, route_name in routes:
         stop_sequence_cache[(system_id, route_name)] = get_stop_sequence(system_id, route_name)
     print(f"Cached {len(stop_sequence_cache)} route stop sequences")
+
+def preload_segment_observations():
+    today_weekday = datetime.now().weekday()  # 0=Monday, 6=Sunday
+    cursor = obs_conn.cursor()
+    cursor.execute("""
+        SELECT system_id, route_name, segment_index, observed_duration_s, osrm_duration_s, ratio, timestamp
+        FROM segment_observations
+        WHERE strftime('%w', datetime(timestamp, 'unixepoch')) = ?
+        ORDER BY timestamp ASC
+    """, (str((today_weekday + 1) % 7),))  # sqlite %w: 0=Sunday, 1=Monday
+    
+    rows = cursor.fetchall()
+    cursor.close()
+
+    seen = set()
+    for system_id, route_name, segment_index, observed_duration_s, osrm_duration_s, ratio, timestamp in rows:
+        key = (system_id, route_name, segment_index)
+        if key in seen:
+            continue  # only take the first (earliest) observation per segment
+        seen.add(key)
+        if key not in segment_observations:
+            segment_observations[key] = []
+        segment_observations[key].append((timestamp, observed_duration_s, osrm_duration_s, ratio))
+
+    print(f"Preloaded {len(seen)} segment observations from last same weekday")
 
 # ── SYSTEM ────────────────────────────────────────────────────────────────────
 
@@ -316,24 +370,41 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
     # and freezing the script.
     
     loops_checked = 0
-    while loops_checked < len(stop_sequence):
-        current_pair = stop_sequence[state['index']]
-        shape_points = json.loads(current_pair[5])
-        _, progress_pct, _ = project_onto_shape(v_lat, v_lon, shape_points)
-        calculated_progress_m = progress_pct * current_pair[6]
+    if state['stop_logging'] == False:  
+        while loops_checked < len(stop_sequence):
+            current_pair = stop_sequence[state['index']]
+            shape_points = json.loads(current_pair[5])
+            _, progress_pct, _ = project_onto_shape(v_lat, v_lon, shape_points)
+            calculated_progress_m = progress_pct * current_pair[6]
 
-        if calculated_progress_m < current_pair[6] - 10:
-            break  # bus is still on this segment
+            if calculated_progress_m < current_pair[6] - 10:
+                break  # bus is still on this segment
 
-        state['index'] = (state['index'] + 1) % len(stop_sequence)
-        state['last_update_time'] = time.time()
-        loops_checked += 1
-    
-    if time.time() - state['last_update_time'] > 180 and speed > 5:
+            prev_index = state['index']
+
+            observed_duration_s = time.time() - state['segment_entry_time']
+            osrm_duration_s = stop_sequence[prev_index][7]  # road_duration_s from precomputed DB
+
+            # sanity check: skip observation if either value is suspicious
+            if osrm_duration_s and osrm_duration_s > 0 and 10 < observed_duration_s < 3600:
+                ratio = observed_duration_s / osrm_duration_s
+                key = (system_id, state['route_name'], prev_index)
+                if key not in segment_observations:
+                    segment_observations[key] = []
+                segment_observations[key].append((time.time(), observed_duration_s, osrm_duration_s, ratio))
+
+            state['index'] = (state['index'] + 1) % len(stop_sequence)
+            state['last_update_time'] = time.time()
+            loops_checked += 1
+            state['segment_entry_time'] = time.time()
+
+        state['progress_pct'] = progress_pct
+
+    if time.time() - state['last_update_time'] > 900 and max(state['last_speeds'][:-56]) < 5:
         state['status'] = 'UNKNOWN'
         state['cold_start_time'] = time.time()
 
-    print(f"  Vehicle {vehicle_id} — index: {state['index']} | pair: {current_pair[10]} → {current_pair[13]}") 
+    print(f"  Vehicle {vehicle_id} — index: {state['index']} | pair: {current_pair[10]} → {current_pair[13]} | progress: {state['progress_pct']:.2f}%")
 
 # ── JOB 1: ROSTER MANAGER (every 90s) ────────────────────────────────────────
 
@@ -373,6 +444,8 @@ def roster_check():
                     'last_moved': time.time(),
                     'stop_logging': False,
                     'stop_cleanup_done': False,
+                    'progress_pct': 0.0,
+                    'segment_entry_time': time.time(),
                 }
                 print(f"  + New vehicle {v.id} on {route_name} → UNKNOWN")
 
@@ -392,6 +465,8 @@ def roster_check():
                     'last_moved': time.time(),
                     'stop_logging': False,
                     'stop_cleanup_done': False,
+                    'progress_pct': 0.0,
+                    'segment_entry_time': time.time(),
                 })
                 print(f"  ↺ Vehicle {v.id} changed route → UNKNOWN")
 
@@ -430,11 +505,29 @@ def global_tick():
             elif state['status'] == 'DETERMINED':
                 live_tracking_tick(system_id, vehicle_id, state, v)
 
+# ── TURN-OFF ──────────────────────────────────────────────────────────────────
+
+def flush_segment_observations(): #flushes everything at midnight to a db (incase I ever need an ML) and keeps the last 3 observations.
+    cursor = obs_conn.cursor()
+    for (system_id, route_name, segment_index), observations in segment_observations.items():
+        for (timestamp, observed_duration_s, osrm_duration_s, ratio) in observations:
+            cursor.execute("""
+                INSERT OR IGNORE INTO segment_observations
+                    (system_id, route_name, segment_index, observed_duration_s, osrm_duration_s, ratio, timestamp, period_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (system_id, route_name, segment_index, observed_duration_s, osrm_duration_s, ratio, timestamp, get_period_type()))
+        
+        segment_observations[(system_id, route_name, segment_index)] = observations[-3:]
+    
+    obs_conn.commit()
+    cursor.close()
+
 # ── SCHEDULER ─────────────────────────────────────────────────────────────────
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(roster_check, 'interval', seconds=90, id='roster_check')
 scheduler.add_job(global_tick,  'interval', seconds=5,  id='global_tick', max_instances=3)
+scheduler.add_job(flush_segment_observations, 'cron', hour=0, minute=0, id='flush_segment_observations')
 
 # ── BOOT ──────────────────────────────────────────────────────────────────────
 
@@ -442,6 +535,7 @@ if __name__ == "__main__":
     setup_db()
     load_tracked_systems()
     preload_stop_sequences()
+    preload_segment_observations()
 
     boot_cursor = track_conn.cursor()
     boot_cursor.execute("SELECT system_id, route_name FROM tracked_routes")
@@ -470,4 +564,8 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         scheduler.shutdown()
+        flush_segment_observations()
+        route_conn.close()
+        track_conn.close()
+        obs_conn.close()
         print("Stopped.")
