@@ -507,7 +507,7 @@ def global_tick():
 
 # ── TURN-OFF ──────────────────────────────────────────────────────────────────
 
-def flush_segment_observations(): #flushes everything at midnight to a db (incase I ever need an ML) and keeps the last 3 observations.
+def flush_segment_observations(): #flushes everything at midnight to a db (incase for an ML) and keeps the last 3 observations.
     cursor = obs_conn.cursor()
     for (system_id, route_name, segment_index), observations in segment_observations.items():
         for (timestamp, observed_duration_s, osrm_duration_s, ratio) in observations:

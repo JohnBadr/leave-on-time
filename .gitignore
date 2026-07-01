@@ -1,18 +1,21 @@
-venv
-other-stuff
-__pycache__
+# Python
+venv/
+__pycache__/
+temp.py
+eta.py
 
+# Databases
+bullrunner.db
+tracking.db
+observations.db
+routegraph.db
 
+# Notes & scratch files
 problems-solved-log.txt
 COMMANDTORUNDOCKERSERVER.txt
 bus_track_logic.txt
 
-bullrunner.db
-tracking.db
-routegraph.db
-
-temp.py
+# Misc
+other-stuff/
 verify_routes.py
-eta.py
-
 verify_routes.html
