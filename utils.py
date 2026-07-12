@@ -9,6 +9,9 @@ def angle_diff(a, b):
     return diff if diff <= 180 else 360 - diff
 
 def project_onto_shape(lat, lon, shape_points):
+    if len(shape_points) < 2:
+        return 0.0, 0.0, 0.0  # degenerate shape — no meaningful projection possible
+    
     best_error_m=float('inf')
     best_segment_idx=0
     best_t=0

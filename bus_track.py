@@ -38,6 +38,7 @@ tracked_vehicles = {
 #           'stop_cleanup_done': False,
 #           'progress_pct': 0.0,
 #           'segment_entry_time': time.time(),
+#           'segment_stopped_s': 0.0,
 #       }
 #   }
 }
@@ -237,8 +238,12 @@ def cold_start_tick(system_id, vehicle_id, state, v):
     if time.time() - state['last_moved'] >= 280 and not state['moving'] and not state['stop_logging']:
         state['stop_logging'] = True
         if not state['stop_cleanup_done']:
-            state['last_speeds'] = state['last_speeds'][:-56]
+            if len(state['last_speeds']) > 56:
+                state['last_speeds'] = state['last_speeds'][:-56]
+            else:
+                state['last_speeds'] = []
             state['stop_cleanup_done'] = True
+
 
     if state['moving']:
         state['stop_logging'] = False
@@ -335,6 +340,8 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
         return
 
     stop_sequence = stop_sequence_cache[(system_id, state['route_name'])]
+    current_pair = stop_sequence[state['index']]
+    progress_pct = state.get('progress_pct', 0.0)
     distance = get_distance_m(state['coords1'][0], state['coords1'][1], v_lat, v_lon)
     speed = (distance / 5) * 3.6
 
@@ -346,9 +353,15 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
     
     if time.time() - state['last_moved'] >= 280 and not state['moving'] and not state['stop_logging']:
         state['stop_logging'] = True
+        state['segment_stopped_s'] = state.get('segment_stopped_s', 0.0) + (time.time() - state['last_moved'])  # ADDED
         if not state['stop_cleanup_done']:
-            state['last_speeds'] = state['last_speeds'][:-56]
+            if len(state['last_speeds']) > 56:
+                state['last_speeds'] = state['last_speeds'][:-56]
+            else:
+                state['last_speeds'] = []
             state['stop_cleanup_done'] = True
+    elif state['stop_logging'] and not state['moving']:
+        state['segment_stopped_s'] = state.get('segment_stopped_s', 0.0) + 5  # ADDED
 
     if state['moving']:
         state['stop_logging'] = False
@@ -382,7 +395,7 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
 
             prev_index = state['index']
 
-            observed_duration_s = time.time() - state['segment_entry_time']
+            observed_duration_s = (time.time() - state['segment_entry_time']) - state.get('segment_stopped_s', 0.0)  # MODIFIED
             osrm_duration_s = stop_sequence[prev_index][7]  # road_duration_s from precomputed DB
 
             # sanity check: skip observation if either value is suspicious
@@ -397,14 +410,18 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
             state['last_update_time'] = time.time()
             loops_checked += 1
             state['segment_entry_time'] = time.time()
+            state['segment_stopped_s'] = 0.0  # ADDED — reset break accounting for the new segment
+        
+    state['progress_pct'] = progress_pct
+    current_pair = stop_sequence[state['index']]
 
-        state['progress_pct'] = progress_pct
 
-    if time.time() - state['last_update_time'] > 900 and max(state['last_speeds'][:-56]) < 5:
+    speeds_to_check = state['last_speeds'][:-56] if len(state['last_speeds']) > 56 else state['last_speeds']
+    if time.time() - state['last_update_time'] > 900 and speeds_to_check and max(speeds_to_check) < 5:
         state['status'] = 'UNKNOWN'
         state['cold_start_time'] = time.time()
 
-    print(f"  Vehicle {vehicle_id} — index: {state['index']} | pair: {current_pair[10]} → {current_pair[13]} | progress: {state['progress_pct']:.2f}%")
+    print(f"  Vehicle {vehicle_id} — index: {state['index']} | pair: {current_pair[10]} → {current_pair[13]} | progress: {state['progress_pct']:.2%}")
 
 # ── JOB 1: ROSTER MANAGER (every 90s) ────────────────────────────────────────
 
@@ -446,6 +463,7 @@ def roster_check():
                     'stop_cleanup_done': False,
                     'progress_pct': 0.0,
                     'segment_entry_time': time.time(),
+                    'segment_stopped_s': 0.0,
                 }
                 print(f"  + New vehicle {v.id} on {route_name} → UNKNOWN")
 
@@ -467,6 +485,7 @@ def roster_check():
                     'stop_cleanup_done': False,
                     'progress_pct': 0.0,
                     'segment_entry_time': time.time(),
+                    'segment_stopped_s': 0.0,
                 })
                 print(f"  ↺ Vehicle {v.id} changed route → UNKNOWN")
 
