@@ -12,12 +12,11 @@ Most transit apps require you to actively check them. LeaveOnTime works in the b
 - Proactive notifications via the web app or email
 - Picks the latest bus that still gets you there on time — not just the next one
 - Automatic override notifications if your bus is running late
-- Confidence score on every notification based on historical patterns
 - Works with any PassioGo transit system 
 - Real-time bus tracking engine with shape-based segment projection
 
 **USF-specific:**
-- Delay prediction model trained on proprietary Bull Runner position data collected since May 2026
+- Delay prediction model trained on proprietary Bull Runner position data from Fall 2026+.
 - Separate ML models per academic period (regular, finals, first week, summer, break, holiday)
 
 ## Architecture
@@ -38,6 +37,8 @@ notifications               ML break prediction
   (personal desk device)
 ```
 
+A standalone shadow-testing process continuously validates ETA prediction accuracy against real bus arrivals across multiple PassioGo systems, fully isolated from the production Bull Runner tracker and its training data.
+
 ## Tech Stack
 
 - **Backend:** Python, Flask, APScheduler
@@ -57,10 +58,12 @@ notifications               ML break prediction
 - [x] Real-time vehicle tracking engine (shape projection, cold start resolution, index advancement)
 - [x] Unscheduled break detector (filters stop time from speed buffer)
 - [x] High-frequency data logger — 5s polling, DETERMINED-only, running 24/7 on Raspberry Pi
-- [ ] ETA engine
+- [x] Shadow testing framework — isolated multi-system validation of ETA predictions against real arrivals
+- [x] Per-vehicle ETA calculation (segment-ratio-corrected against OSRM baselines)
+- [ ] Multi-bus selection algorithm (project-forward, pick latest bus still on time)
 - [ ] Optimal stop selection
 - [ ] Departure calculation
-- [ ] User accounts + recurring schedules
+- [~] User accounts + recurring schedules — in progress
 - [ ] Notification scheduler
 - [ ] Web interface (PWA)
 - [ ] Deployment
