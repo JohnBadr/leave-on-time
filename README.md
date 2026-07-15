@@ -57,7 +57,7 @@ A standalone shadow-testing process continuously validates ETA prediction accura
 - [x] Route graph precomputation via OSRM (road-accurate stop-pair distances + shape points)
 - [x] Real-time vehicle tracking engine (shape projection, cold start resolution, index advancement)
 - [x] Unscheduled break detector (filters stop time from speed buffer)
-- [x] High-frequency data logger — 5s polling, DETERMINED-only, running 24/7 on Raspberry Pi
+- [ ] High-frequency data logger — 5s polling, DETERMINED-only, running 24/7 on Raspberry Pi
 - [x] Shadow testing framework — isolated multi-system validation of ETA predictions against real arrivals
 - [x] Per-vehicle ETA calculation (segment-ratio-corrected against OSRM baselines)
 - [ ] Multi-bus selection algorithm (project-forward, pick latest bus still on time)
