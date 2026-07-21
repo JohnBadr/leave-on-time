@@ -62,6 +62,14 @@ segment_observations = {
 #   ]
 }
 
+stop_dwell_observations = {
+#   (system_id, route_name, stop_id): [
+#       (timestamp, dwell_s),
+#       (timestamp, dwell_s),
+#       ...
+#   ]
+}
+
 # ── DB SETUP ──────────────────────────────────────────────────────────────────
 
 def setup_db():
@@ -97,6 +105,19 @@ def setup_db():
             PRIMARY KEY (system_id, route_name, segment_index, timestamp)
         )
     """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS stop_dwell_observations (
+            system_id     INTEGER,
+            route_name    TEXT,
+            stop_id       TEXT,
+            dwell_s       REAL,
+            timestamp     REAL,
+            period_type   TEXT,
+            PRIMARY KEY (system_id, route_name, stop_id, timestamp)
+        )
+    """)
+
     obs_conn.commit()
     cursor.close()
 
@@ -149,6 +170,28 @@ def preload_segment_observations():
         segment_observations[key].append((timestamp, observed_duration_s, osrm_duration_s, ratio))
 
     print(f"Preloaded {len(seen)} segment observations from last same weekday")
+
+def preload_stop_dwell_observations():  # ADDED
+    today_weekday = datetime.now().weekday()
+    cursor = obs_conn.cursor()
+    cursor.execute("""
+        SELECT system_id, route_name, stop_id, dwell_s, timestamp
+        FROM stop_dwell_observations
+        WHERE strftime('%w', datetime(timestamp, 'unixepoch')) = ?
+        ORDER BY timestamp ASC
+    """, (str((today_weekday + 1) % 7),))
+    rows = cursor.fetchall()
+    cursor.close()
+
+    seen = set()
+    for system_id, route_name, stop_id, dwell_s, timestamp in rows:
+        key = (system_id, route_name, stop_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        stop_dwell_observations.setdefault(key, []).append((timestamp, dwell_s))
+
+    print(f"Preloaded {len(seen)} stop dwell observations from last same weekday")
 
 # ── SYSTEM ────────────────────────────────────────────────────────────────────
 fetch_executor = ThreadPoolExecutor(max_workers=10)
@@ -204,12 +247,12 @@ def get_system(system_id=USF_SYSTEM_ID):
 # ── ROUTES ────────────────────────────────────────────────────────────────────
 
 def trim_segment_observations():
-    # Bounds in-memory growth between midnight flushes. flush_segment_observations()
-    # only trims down to the last 3 once a day — without this, a busy route accumulates
-    # unbounded entries in segment_observations all day long.
     for key in list(segment_observations.keys()):
         if len(segment_observations[key]) > 100:
             segment_observations[key] = segment_observations[key][-100:]
+    for key in list(stop_dwell_observations.keys()):  # ADDED
+        if len(stop_dwell_observations[key]) > 100:  # ADDED
+            stop_dwell_observations[key] = stop_dwell_observations[key][-100:]  # ADDED
 
 def get_routes(system):
     cursor = route_conn.cursor()
@@ -415,6 +458,11 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
     stop_sequence = stop_sequence_cache[(system_id, state['route_name'])]
     current_pair = stop_sequence[state['index']]
     progress_pct = state.get('progress_pct', 0.0)
+
+    dist_to_stop_m = get_distance_m(v_lat, v_lon, current_pair[11], current_pair[12])  # ADDED — s2_lat/s2_lon of current pair, light haversine not shape projection
+    if dist_to_stop_m <= 10 and state.get('stop_arrival_time') is None:  # ADDED
+        state['stop_arrival_time'] = time.time()  # ADDED — first entry into the zone; GPS jitter in/out won't reset this, only advancement clears it
+    
     distance = get_distance_m(state['coords1'][0], state['coords1'][1], v_lat, v_lon)
     speed = (distance / 5) * 3.6
 
@@ -478,6 +526,14 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
                 if key not in segment_observations:
                     segment_observations[key] = []
                 segment_observations[key].append((time.time(), observed_duration_s, osrm_duration_s, ratio))
+
+            # ── STOP DWELL: record + reset ──  (ADDED)
+            if state.get('stop_arrival_time') is not None:  # ADDED
+                dwell_s = time.time() - state['stop_arrival_time']  # ADDED
+                if 0 <= dwell_s < 200:  # ADDED — sanity cap; excludes long driver-break stalls that also happened to sit near a stop
+                    dwell_key = (system_id, state['route_name'], stop_sequence[prev_index][2])  # ADDED — dest_stop_id of segment just completed
+                    stop_dwell_observations.setdefault(dwell_key, []).append((time.time(), dwell_s))  # ADDED
+                state['stop_arrival_time'] = None  # ADDED — reset for the next stop
 
             state['index'] = (state['index'] + 1) % len(stop_sequence)
             state['last_update_time'] = time.time()
@@ -649,6 +705,19 @@ def flush_segment_observations(): #flushes everything at midnight to a db (incas
     obs_conn.commit()
     cursor.close()
 
+def flush_stop_dwell_observations():  # ADDED
+    cursor = obs_conn.cursor()
+    for (system_id, route_name, stop_id), observations in stop_dwell_observations.items():
+        for (timestamp, dwell_s) in observations:
+            cursor.execute("""
+                INSERT OR IGNORE INTO stop_dwell_observations
+                    (system_id, route_name, stop_id, dwell_s, timestamp, period_type)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (system_id, route_name, stop_id, dwell_s, timestamp, get_period_type()))
+        stop_dwell_observations[(system_id, route_name, stop_id)] = observations[-3:]
+    obs_conn.commit()
+    cursor.close()
+
 # ── SCHEDULER ─────────────────────────────────────────────────────────────────
 
 scheduler = BackgroundScheduler()
@@ -656,6 +725,7 @@ scheduler.add_job(roster_check, 'interval', seconds=90, id='roster_check')
 scheduler.add_job(global_tick, 'interval', seconds=5, id='global_tick', max_instances=1, coalesce=True)
 scheduler.add_job(flush_segment_observations, 'cron', hour=0, minute=0, id='flush_segment_observations')
 scheduler.add_job(trim_segment_observations, 'interval', seconds=45, id='trim_segment_observations')  # ADDED
+scheduler.add_job(flush_stop_dwell_observations, 'cron', hour=0, minute=0, id='flush_stop_dwell_observations')  # ADDED
 
 # ── BOOT ──────────────────────────────────────────────────────────────────────
 

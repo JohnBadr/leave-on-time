@@ -7,7 +7,7 @@ from passiogo_fix import passiogo
 from geopy.distance import geodesic
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
-from bus_track import segment_observations
+from bus_track import segment_observations, stop_dwell_observations
 
 
 # note for the function below, the user will give us the boarding stop index and the destination stop index but not the pair indexes so we
@@ -24,6 +24,8 @@ from bus_track import segment_observations
 #     if sp[2] == dest_stop_id
 # )
 
+DEFAULT_STOP_DWELL_S = 3.0  # ADDED
+
 def _get_fallback_ratio():
     hour = datetime.now().hour
     if 7 <= hour < 9:
@@ -39,6 +41,13 @@ def _get_fallback_ratio():
     else:
         return 1.0
 
+def _get_stop_dwell_s(system_id, route_name, stop_id):  # ADDED
+    key = (system_id, route_name, stop_id)
+    observations = stop_dwell_observations.get(key, [])
+    window = [d for (t, d) in observations if time.time() - t < 3600]
+    if not window:
+        window = [d for (t, d) in observations if time.time() - t < 10800]
+    return sum(window) / len(window) if window else DEFAULT_STOP_DWELL_S
 
 def _compute_vehicle_eta(system_id, state, stop_sequence, dest_idx):
 
@@ -59,13 +68,16 @@ def _compute_vehicle_eta(system_id, state, stop_sequence, dest_idx):
     # ratio for active segment
     key = (system_id, state['route_name'], idx)
     observations = segment_observations.get(key, [])
-    window = [r for (t, _, _, r) in observations if time.time() - t < 2700]
+    window = [r for (t, _, _, r) in observations if time.time() - t < 3600]
     if not window:
         window = [r for (t, _, _, r) in observations if time.time() - t < 10800]
     ratio = sum(window) / len(window) if window else _get_fallback_ratio()
 
     distance_to_dest_m  = remaining_distance_m
     time_to_dest_s      = remaining_osrm_time_s * ratio
+
+    if idx != dest_idx:  # ADDED — only add dwell if this stop is a passthrough, not the final destination
+        time_to_dest_s += _get_stop_dwell_s(system_id, state['route_name'], current_pair[2])  # ADDED
 
     # ── DOWNSTREAM SEGMENTS ──
     highest_idx = len(stop_sequence)
@@ -78,13 +90,16 @@ def _compute_vehicle_eta(system_id, state, stop_sequence, dest_idx):
 
         key = (system_id, state['route_name'], idx)
         observations = segment_observations.get(key, [])
-        window = [r for (t, _, _, r) in observations if time.time() - t < 2700]
+        window = [r for (t, _, _, r) in observations if time.time() - t < 3600]
         if not window:
             window = [r for (t, _, _, r) in observations if time.time() - t < 10800]
         ratio = sum(window) / len(window) if window else _get_fallback_ratio()
 
         distance_to_dest_m += current_pair[6]
         time_to_dest_s     += current_pair[7] * ratio
+
+        if idx != dest_idx:  # ADDED
+            time_to_dest_s += _get_stop_dwell_s(system_id, state['route_name'], current_pair[2])  # ADDED
 
     if loops_checked == highest_idx:
         return None  # dest_idx never found, bus may have left route
