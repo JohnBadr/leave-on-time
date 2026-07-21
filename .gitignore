@@ -4,10 +4,7 @@ __pycache__/
 temp.py
 
 # Databases
-bullrunner.db
-tracking.db
-observations.db
-routegraph.db
+*.db
 
 # Notes & scratch files
 problems-solved-log.txt
@@ -16,5 +13,6 @@ bus_track_logic.txt
 
 # Misc
 other-stuff/
+shadow_tests
 verify_routes.py
 verify_routes.html

@@ -3,9 +3,11 @@ from utils import get_distance_m, compute_bearing, angle_diff, project_onto_shap
 import sqlite3
 import time
 import json
+import queue
 from passiogo_fix import passiogo
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 route_conn = sqlite3.connect("routegraph.db", check_same_thread=False)
 track_conn = sqlite3.connect("tracking.db", check_same_thread=False)
@@ -14,6 +16,7 @@ obs_conn = sqlite3.connect("observations.db", check_same_thread=False)
 # no global cursors — every function creates and closes its own
 
 USF_SYSTEM_ID = 2343
+VEHICLE_PRUNE_MISSES = 24
 
 tracked_systems = {
 #   system_id: <system_obj>
@@ -102,10 +105,16 @@ def setup_db():
 def load_tracked_systems():
     cursor = track_conn.cursor()
     cursor.execute("SELECT system_id FROM tracked_systems")
-    for (system_id,) in cursor.fetchall():
-        if system_id not in tracked_systems:
-            tracked_systems[system_id] = passiogo.getSystemFromID(system_id)
+    system_ids = cursor.fetchall()
     cursor.close()
+    for (system_id,) in system_ids:
+        if system_id not in tracked_systems:
+            try:  # ADDED
+                tracked_systems[system_id] = passiogo.getSystemFromID(system_id)
+            except Exception as e:  # ADDED
+                print(f"  [boot] failed to load system {system_id}, skipping this run: {e}")  # ADDED
+                continue  # ADDED — one bad system no longer kills the whole boot
+    
 
 def preload_stop_sequences():
     cursor = track_conn.cursor()
@@ -142,10 +151,46 @@ def preload_segment_observations():
     print(f"Preloaded {len(seen)} segment observations from last same weekday")
 
 # ── SYSTEM ────────────────────────────────────────────────────────────────────
+fetch_executor = ThreadPoolExecutor(max_workers=10)
+
+def fetch_vehicles_for_systems(system_dict):
+    """
+    Fetch vehicles across tracked systems in parallel with a strict 4s timeout.
+    Prevents API hangups from blocking the main scheduler tick thread.
+    """
+    results = {}
+    if not system_dict:
+        return results
+
+    def _fetch(sid, sys_obj):
+        try:
+            return sid, sys_obj.getVehicles()
+        except Exception as e:
+            print(f"[fetch] API error for system {sid}: {e}")
+            return sid, None
+
+    futures = {fetch_executor.submit(_fetch, sid, obj): sid for sid, obj in system_dict.items()}
+    
+    for future in futures:
+        sid = futures[future]
+        try:
+            system_id, vehicles = future.result(timeout=4.0)
+            if vehicles is not None:
+                results[system_id] = vehicles
+        except TimeoutError:
+            print(f"[fetch] API timeout for system {sid}")
+        except Exception as e:
+            print(f"[fetch] Unexpected fetch error for system {sid}: {e}")
+
+    return results
 
 def get_system(system_id=USF_SYSTEM_ID):
     if system_id not in tracked_systems:
-        system = passiogo.getSystemFromID(system_id)
+        try:  # ADDED
+            system = passiogo.getSystemFromID(system_id)
+        except Exception as e:  # ADDED
+            print(f"  [get_system] failed to load system {system_id}: {e}")  # ADDED
+            raise  # ADDED — re-raise: caller (e.g. add_tracked_route) needs to know this failed, can't silently return None here since callers assume a valid system object
         tracked_systems[system_id] = system
         cursor = track_conn.cursor()
         cursor.execute("""
@@ -157,6 +202,14 @@ def get_system(system_id=USF_SYSTEM_ID):
     return tracked_systems[system_id]
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
+
+def trim_segment_observations():
+    # Bounds in-memory growth between midnight flushes. flush_segment_observations()
+    # only trims down to the last 3 once a day — without this, a busy route accumulates
+    # unbounded entries in segment_observations all day long.
+    for key in list(segment_observations.keys()):
+        if len(segment_observations[key]) > 100:
+            segment_observations[key] = segment_observations[key][-100:]
 
 def get_routes(system):
     cursor = route_conn.cursor()
@@ -196,7 +249,26 @@ def remove_tracked_route(system, route_name):
         WHERE system_id = ? AND route_name = ? AND active_users <= 0
     """, (system.id, route_name))
     track_conn.commit()
+
+    cursor.execute("SELECT COUNT(*) FROM tracked_routes WHERE system_id = ?", (system.id,))
+    remaining = cursor.fetchone()[0]  # ADDED
     cursor.close()
+
+    if remaining == 0:  # ADDED
+        tracked_systems.pop(system.id, None)  # ADDED — stop polling a system with no active routes
+
+        removed_count = len(tracked_vehicles.get(system.id, {}))  # ADDED
+        tracked_vehicles.pop(system.id, None)  # ADDED — drop stale in-memory vehicle states for this system
+        stale_keys = [k for k in stop_sequence_cache if k[0] == system.id]  # ADDED
+        for k in stale_keys:  # ADDED
+            del stop_sequence_cache[k]  # ADDED — no tracked route left means this cached sequence is dead weight too
+
+        cursor = track_conn.cursor()  # ADDED
+        cursor.execute("DELETE FROM tracked_systems WHERE system_id = ?", (system.id,))  # ADDED
+        track_conn.commit()  # ADDED
+        cursor.close()  # ADDED
+        print(f"  [route] system {system.id} has no remaining tracked routes — removed from polling, "  # ADDED
+              f"dropped {removed_count} vehicle state(s), cleared {len(stale_keys)} cached stop sequence(s)")  # ADDED
 
 def get_stop_sequence(system_id, route_name):
     cursor = route_conn.cursor()
@@ -235,11 +307,11 @@ def cold_start_tick(system_id, vehicle_id, state, v):
     else:
         state['moving'] = False
     
-    if time.time() - state['last_moved'] >= 280 and not state['moving'] and not state['stop_logging']:
+    if time.time() - state['last_moved'] >= 150 and not state['moving'] and not state['stop_logging']:
         state['stop_logging'] = True
         if not state['stop_cleanup_done']:
-            if len(state['last_speeds']) > 56:
-                state['last_speeds'] = state['last_speeds'][:-56]
+            if len(state['last_speeds']) > 30:
+                state['last_speeds'] = state['last_speeds'][:-30]
             else:
                 state['last_speeds'] = []
             state['stop_cleanup_done'] = True
@@ -263,11 +335,11 @@ def cold_start_tick(system_id, vehicle_id, state, v):
     if elapsed < 120:
         tier = 1
     elif elapsed < 180:
-        tier = 2 #heading is not used anymore aka cant seem to get it.
+        tier = 2 
     elif elapsed < 300:
         tier = 3 
     else:
-        tier = 4
+        tier = 4 #heading is not used anymore aka cant seem to get it.
 
     v_heading = float(v.calculatedCourse) if v.calculatedCourse else None
     if v_heading is not None:
@@ -325,7 +397,7 @@ def _resolve_cold_start(system_id, vehicle_id, index, tier):
     state['status'] = 'DETERMINED'
     state['confidence'] = tier
     state['cold_start_time'] = None
-    print(f"  ✓ Vehicle {vehicle_id} resolved → index {index} (tier {tier} confidence)")
+    print(f"  ✓ Vehicle {vehicle_id}, resolved → index {index} (tier {tier} confidence)")
 
 # ── LIVE TRACKING ─────────────────────────────────────────────────────────────
 
@@ -333,6 +405,7 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
     # runs every 5s — shape projection is pure local math, no API calls needed (except bus lat/lon)
     v_lat = float(v.latitude)
     v_lon = float(v.longitude)
+    v_name = v.name
     coords = (v_lat, v_lon)
 
     if not state['coords1']:
@@ -351,12 +424,12 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
     else:
         state['moving'] = False
     
-    if time.time() - state['last_moved'] >= 280 and not state['moving'] and not state['stop_logging']:
+    if time.time() - state['last_moved'] >= 150 and not state['moving'] and not state['stop_logging']:
         state['stop_logging'] = True
         state['segment_stopped_s'] = state.get('segment_stopped_s', 0.0) + (time.time() - state['last_moved'])  # ADDED
         if not state['stop_cleanup_done']:
-            if len(state['last_speeds']) > 56:
-                state['last_speeds'] = state['last_speeds'][:-56]
+            if len(state['last_speeds']) > 30:
+                state['last_speeds'] = state['last_speeds'][:-30]
             else:
                 state['last_speeds'] = []
             state['stop_cleanup_done'] = True
@@ -416,12 +489,12 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
     current_pair = stop_sequence[state['index']]
 
 
-    speeds_to_check = state['last_speeds'][:-56] if len(state['last_speeds']) > 56 else state['last_speeds']
+    speeds_to_check = state['last_speeds'][:-30] if len(state['last_speeds']) > 30 else state['last_speeds']
     if time.time() - state['last_update_time'] > 900 and speeds_to_check and max(speeds_to_check) < 5:
         state['status'] = 'UNKNOWN'
         state['cold_start_time'] = time.time()
 
-    print(f"  Vehicle {vehicle_id} — index: {state['index']} | pair: {current_pair[10]} → {current_pair[13]} | progress: {state['progress_pct']:.2%}")
+    print(f"  Vehicle {vehicle_id}, name {v_name} — index: {state['index']} | pair: {current_pair[10]} → {current_pair[13]} | progress: {state['progress_pct']:.2%}")
 
 # ── JOB 1: ROSTER MANAGER (every 90s) ────────────────────────────────────────
 
@@ -429,13 +502,34 @@ def roster_check():
     cursor = track_conn.cursor()
     cursor.execute("SELECT system_id, route_name FROM tracked_routes")
     routes_to_track = cursor.fetchall()
+    cursor.close()
+
+    needed_system_ids = {system_id for system_id, _ in routes_to_track}
+
+    for sid in needed_system_ids:
+        if sid not in tracked_systems:
+            try:  # ADDED
+                get_system(sid)  # ADDED — reuses existing insert-into-tracked_systems-table logic
+                print(f"  [roster] recovered system {sid} on retry")  # ADDED
+            except Exception as e:  # ADDED
+                print(f"  [roster] system {sid} still unavailable, skipping this cycle: {e}")  # ADDED
+                continue  # ADDED — one bad system doesn't block the rest of roster_check
+
+    systems_to_fetch = {
+        sid: tracked_systems[sid] for sid in needed_system_ids if sid in tracked_systems
+    }
+    fresh_by_system = fetch_vehicles_for_systems(systems_to_fetch)
 
     for system_id, route_name in routes_to_track:
         system = tracked_systems.get(system_id)
         if system is None:
-            continue  # cursor stays open, loop continues
+            continue  
 
-        fresh_vehicles = system.getVehicles()
+        fresh_vehicles = fresh_by_system.get(system_id)  # CHANGED: was fresh_vehicles = system.getVehicles()
+        if fresh_vehicles is None:
+            print(f"  [roster] no fresh data for system {system_id} this cycle, skipping")  # ADDED
+            continue
+
         fresh_route_vehicles = [v for v in fresh_vehicles if v.routeName == route_name]
         fresh_ids = {v.id for v in fresh_route_vehicles}
 
@@ -493,36 +587,50 @@ def roster_check():
             del tracked_vehicles[system_id][vehicle_id]
             print(f"  - Vehicle {vehicle_id} disappeared → removed")
 
-    cursor.close()  # closed once at the very end, never inside the loop
-
 # ── JOB 2: GLOBAL TICKER (every 5s) ──────────────────────────────────────────
 
 def global_tick():
-    for system_id, vehicles in tracked_vehicles.items():
-        system = tracked_systems.get(system_id)
-        if system is None:
-            continue
+    # 1. Fetch fresh vehicle updates across all systems with strict timeouts
+    fresh_by_system = fetch_vehicles_for_systems(tracked_systems)
 
-        try:
-            fresh_vehicles = system.getVehicles()
-        except Exception as e:
-            print(f"  API error for system {system_id}: {e}")
-            continue
+    for system_id, vehicles in tracked_vehicles.items():  # ADDED
+        if system_id in fresh_by_system:  # ADDED
+            continue  # ADDED — handled normally below
+        for vehicle_id, state in list(vehicles.items()):  # ADDED
+            state['_missing_ticks'] = state.get('_missing_ticks', 0) + 1  # ADDED
+            if state['_missing_ticks'] > VEHICLE_PRUNE_MISSES:  # ADDED
+                del vehicles[vehicle_id]  # ADDED
+                print(f"  [tick] Pruned vehicle {vehicle_id} on system {system_id} "  # ADDED
+                      f"(system unreachable for {state['_missing_ticks']} ticks)")  # ADDED
 
+    for system_id, fresh_vehicles in fresh_by_system.items():
         fresh_by_id = {v.id: v for v in fresh_vehicles}
+        vehicles = tracked_vehicles.get(system_id, {})
 
+        # 2. Process tracked vehicles & prune stale ones
         for vehicle_id, state in list(vehicles.items()):
             v = fresh_by_id.get(vehicle_id)
+
             if v is None:
+                # Vehicle vanished from API feed
+                state['_missing_ticks'] = state.get('_missing_ticks', 0) + 1
+                if state['_missing_ticks'] > VEHICLE_PRUNE_MISSES:
+                    del vehicles[vehicle_id]
+                    print(f"  [tick] Pruned vehicle {vehicle_id} on system {system_id} (missing {state['_missing_ticks']} ticks)")
                 continue
 
+            # Vehicle is alive - reset miss counter and update object reference
+            state['_missing_ticks'] = 0
             state['vehicle_obj'] = v
 
-            if state['status'] == 'UNKNOWN':
-                cold_start_tick(system_id, vehicle_id, state, v)
-
-            elif state['status'] == 'DETERMINED':
-                live_tracking_tick(system_id, vehicle_id, state, v)
+            # 3. State machine tracking
+            try:
+                if state['status'] == 'UNKNOWN':
+                    cold_start_tick(system_id, vehicle_id, state, v)
+                elif state['status'] == 'DETERMINED':
+                    live_tracking_tick(system_id, vehicle_id, state, v)
+            except Exception as e:
+                print(f"  [tick] Error processing vehicle {vehicle_id} on system {system_id}: {e}")
 
 # ── TURN-OFF ──────────────────────────────────────────────────────────────────
 
@@ -545,8 +653,9 @@ def flush_segment_observations(): #flushes everything at midnight to a db (incas
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(roster_check, 'interval', seconds=90, id='roster_check')
-scheduler.add_job(global_tick,  'interval', seconds=5,  id='global_tick', max_instances=3)
+scheduler.add_job(global_tick, 'interval', seconds=5, id='global_tick', max_instances=1, coalesce=True)
 scheduler.add_job(flush_segment_observations, 'cron', hour=0, minute=0, id='flush_segment_observations')
+scheduler.add_job(trim_segment_observations, 'interval', seconds=45, id='trim_segment_observations')  # ADDED
 
 # ── BOOT ──────────────────────────────────────────────────────────────────────
 
@@ -564,14 +673,16 @@ if __name__ == "__main__":
     if active_routes:
         print(f"Found {len(active_routes)} routes in DB. Activating tracking...")
         for system_id, route_name in active_routes:
-            system_obj = get_system(system_id)
-            print(f" -> Booting tracking for System: {system_id}, Route: {route_name}")
+            try:  # ADDED
+                system_obj = get_system(system_id)
+                print(f" -> Booting tracking for System: {system_id}, Route: {route_name}")
+            except Exception as e:  # ADDED
+                print(f" -> Failed to boot system {system_id} ({route_name}), will retry via roster_check: {e}")  # ADDED
+                continue  # ADDED — one bad system no longer aborts the entire boot sequence
     else:
-        print("Database empty. Seeding default USF Red route...")
+        print("Database empty. Seeding default USF route(s)...")
         system = get_system(USF_SYSTEM_ID)
         add_tracked_route(system, "Red")
-        add_tracked_route(system, "Purple")
-        add_tracked_route(system, "Green")
 
     roster_check()
 
