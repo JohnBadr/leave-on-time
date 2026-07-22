@@ -452,7 +452,7 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
     progress_pct = state.get('progress_pct', 0.0)
 
     dist_to_stop_m = get_distance_m(v_lat, v_lon, current_pair[11], current_pair[12])  # ADDED — s2_lat/s2_lon of current pair, light haversine not shape projection
-    if dist_to_stop_m <= 10 and state.get('stop_arrival_time') is None:  # ADDED
+    if dist_to_stop_m <= 15 and state.get('stop_arrival_time') is None:  # ADDED
         state['stop_arrival_time'] = time.time()  # ADDED — first entry into the zone; GPS jitter in/out won't reset this, only advancement clears it
     
     distance = get_distance_m(state['coords1'][0], state['coords1'][1], v_lat, v_lon)
@@ -513,7 +513,7 @@ def live_tracking_tick(system_id, vehicle_id, state, v):
 
             # sanity check: skip observation if either value is suspicious
             if osrm_duration_s and osrm_duration_s > 0 and 10 < observed_duration_s < 3600:
-                ratio = observed_duration_s / osrm_duration_s
+                ratio = max(0.6, min(2.0, observed_duration_s / osrm_duration_s))
                 key = (system_id, state['route_name'], prev_index)
                 if key not in segment_observations:
                     segment_observations[key] = []
