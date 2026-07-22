@@ -246,14 +246,6 @@ def get_system(system_id=USF_SYSTEM_ID):
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
 
-def trim_segment_observations():
-    for key in list(segment_observations.keys()):
-        if len(segment_observations[key]) > 100:
-            segment_observations[key] = segment_observations[key][-100:]
-    for key in list(stop_dwell_observations.keys()):  # ADDED
-        if len(stop_dwell_observations[key]) > 100:  # ADDED
-            stop_dwell_observations[key] = stop_dwell_observations[key][-100:]  # ADDED
-
 def get_routes(system):
     cursor = route_conn.cursor()
     cursor.execute("""
@@ -688,10 +680,48 @@ def global_tick():
             except Exception as e:
                 print(f"  [tick] Error processing vehicle {vehicle_id} on system {system_id}: {e}")
 
-# ── TURN-OFF ──────────────────────────────────────────────────────────────────
+# ── CLEAN ──────────────────────────────────────────────────────────────────
 
-def flush_segment_observations(): #flushes everything at midnight to a db (incase for an ML) and keeps the last 3 observations.
+def trim_segment_observations():
+    for key, observations in list(segment_observations.items()):
+        if len(observations) > 100:
+            overflow = observations[:-100]  # CHANGED — capture what's about to be cut, not just discard it
+            _archive_segment_observations(key, overflow)  # ADDED
+            segment_observations[key] = observations[-100:]
+
+    for key, observations in list(stop_dwell_observations.items()):
+        if len(observations) > 100:
+            overflow = observations[:-100]  # ADDED
+            _archive_stop_dwell_observations(key, overflow)  # ADDED
+            stop_dwell_observations[key] = observations[-100:]
+
+def _archive_segment_observations(key, observations):  # ADDED
+    system_id, route_name, segment_index = key
     cursor = obs_conn.cursor()
+    for (timestamp, observed_duration_s, osrm_duration_s, ratio) in observations:
+        cursor.execute("""
+            INSERT OR IGNORE INTO segment_observations
+                (system_id, route_name, segment_index, observed_duration_s, osrm_duration_s, ratio, timestamp, period_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (system_id, route_name, segment_index, observed_duration_s, osrm_duration_s, ratio, timestamp, get_period_type()))
+    obs_conn.commit()
+    cursor.close()
+
+def _archive_stop_dwell_observations(key, observations):  # ADDED
+    system_id, route_name, stop_id = key
+    cursor = obs_conn.cursor()
+    for (timestamp, dwell_s) in observations:
+        cursor.execute("""
+            INSERT OR IGNORE INTO stop_dwell_observations
+                (system_id, route_name, stop_id, dwell_s, timestamp, period_type)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (system_id, route_name, stop_id, dwell_s, timestamp, get_period_type()))
+    obs_conn.commit()
+    cursor.close()
+
+def flush_all_observations():
+    cursor = obs_conn.cursor()
+
     for (system_id, route_name, segment_index), observations in segment_observations.items():
         for (timestamp, observed_duration_s, osrm_duration_s, ratio) in observations:
             cursor.execute("""
@@ -699,14 +729,7 @@ def flush_segment_observations(): #flushes everything at midnight to a db (incas
                     (system_id, route_name, segment_index, observed_duration_s, osrm_duration_s, ratio, timestamp, period_type)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (system_id, route_name, segment_index, observed_duration_s, osrm_duration_s, ratio, timestamp, get_period_type()))
-        
-        segment_observations[(system_id, route_name, segment_index)] = observations[-3:]
-    
-    obs_conn.commit()
-    cursor.close()
 
-def flush_stop_dwell_observations():  # ADDED
-    cursor = obs_conn.cursor()
     for (system_id, route_name, stop_id), observations in stop_dwell_observations.items():
         for (timestamp, dwell_s) in observations:
             cursor.execute("""
@@ -714,18 +737,17 @@ def flush_stop_dwell_observations():  # ADDED
                     (system_id, route_name, stop_id, dwell_s, timestamp, period_type)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (system_id, route_name, stop_id, dwell_s, timestamp, get_period_type()))
-        stop_dwell_observations[(system_id, route_name, stop_id)] = observations[-3:]
+
     obs_conn.commit()
     cursor.close()
+    print(f"  [shutdown] flushed {len(segment_observations)} segment key(s) and {len(stop_dwell_observations)} stop-dwell key(s) to disk")
 
 # ── SCHEDULER ─────────────────────────────────────────────────────────────────
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(roster_check, 'interval', seconds=90, id='roster_check')
 scheduler.add_job(global_tick, 'interval', seconds=5, id='global_tick', max_instances=1, coalesce=True)
-scheduler.add_job(flush_segment_observations, 'cron', hour=0, minute=0, id='flush_segment_observations')
-scheduler.add_job(trim_segment_observations, 'interval', seconds=45, id='trim_segment_observations')  # ADDED
-scheduler.add_job(flush_stop_dwell_observations, 'cron', hour=0, minute=0, id='flush_stop_dwell_observations')  # ADDED
+scheduler.add_job(trim_segment_observations, 'interval', minutes=120, id='trim_segment_observations')  # ADDED
 
 # ── BOOT ──────────────────────────────────────────────────────────────────────
 
@@ -764,7 +786,7 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         scheduler.shutdown()
-        flush_segment_observations()
+        flush_all_observations()
         route_conn.close()
         track_conn.close()
         obs_conn.close()
