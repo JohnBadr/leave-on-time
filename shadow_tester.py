@@ -42,6 +42,8 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 from passiogo_fix import passiogo
 from apscheduler.schedulers.background import BackgroundScheduler
+from eta import _compute_vehicle_eta, RATIO_MAX_AGE_S  # CHANGED — added RATIO_MAX_AGE_S import, shared constant instead of a second 
+# hardcoded copy that can drift out of sync with eta.py's real windowing (this is exactly what happened with the old 2700-vs-3600 mismatch)
 
 from bus_track import (
     tracked_vehicles,
@@ -69,6 +71,10 @@ MAINTENANCE_INTERVAL_S = 45  # how often the slower session-management pass runs
 VEHICLE_PRUNE_MISSES   = 24  # ~2 min of consecutive misses at 5s cadence before a vehicle is dropped
 SESSION_START_RETRIES  = 10  # cap on attempts to find a live system/route when (re)starting a session
 TARGET_PICK_RETRIES    = 20  # cap on attempts to find a valid random target index
+TARGET_SELECTION_MODE = 'farthest'  # ADDED — 'random' (default, existing behavior) or 'farthest'
+                                    # ADDED — 'farthest': target = (reference vehicle's current index + n//2) % n,
+                                    # ADDED — the stop diametrically opposite the bus right now, maximizing test distance
+
 
 CHECKPOINT_ORDER = {'start': 0, 'mid': 1, 'near': 2}  # drives the checkpoint_order column + shadow_checkpoints_sorted view
 
@@ -299,16 +305,28 @@ def _backfill_checkpoint_errors(test_id, vehicle_id, actual_arrival_ts):
     cursor.close()
 
 def _ratio_diagnostics(system_id, route_name, segment_index):
-    # Deliberately duplicates eta.py's windowing logic rather than importing
-    # it, so this is purely a diagnostic label and never affects the actual
-    # ETA math — eta.py's return contract stays untouched.
-    key = (system_id, route_name, segment_index)
-    observations = segment_observations.get(key, [])
+    # CHANGED — was a binary 'observed'/'fallback' check against only the
+    # segment's own observations. eta.py's ratios are now blended (own +
+    # route-wide), so three states are meaningful: the segment has its own
+    # real data ('own'), it has none but the route has data elsewhere to
+    # blend from ('route_blended'), or neither exists and eta.py fell back
+    # to the hardcoded time-of-day constant ('fallback'). This still never
+    # affects the actual ETA math — purely a diagnostic label on checkpoints.
     now = time.time()
-    window = [o for o in observations if now - o[0] < 3600]
-    if not window:
-        window = [o for o in observations if now - o[0] < 10800]
-    return 'observed' if window else 'fallback'
+
+    key = (system_id, route_name, segment_index)
+    own_observations = segment_observations.get(key, [])
+    own_has_data = any(now - t < RATIO_MAX_AGE_S for (t, _, _, _) in own_observations)  # CHANGED — was two-tier 2700s/10800s window check
+    if own_has_data:
+        return 'own'  # CHANGED — was 'observed'
+
+    route_has_data = any(  # ADDED
+        now - t < RATIO_MAX_AGE_S  # ADDED
+        for (sid, rname, seg_idx), obs in segment_observations.items()  # ADDED
+        if sid == system_id and rname == route_name  # ADDED
+        for (t, _, _, _) in obs  # ADDED
+    )
+    return 'route_blended' if route_has_data else 'fallback'  # ADDED
 
 # ── OBSERVATION ARCHIVING (shadow-test-only, isolated from bus_track.py's real observations.db) ──
 
@@ -511,6 +529,20 @@ def _pick_new_target(session, vehicle_states):
     n = len(stop_sequence)
     if n < 2:
         return None
+
+    if TARGET_SELECTION_MODE == 'farthest':  # ADDED
+        reference_index = vehicle_states[0].get('index')  # ADDED — anchor off the first tracked vehicle; a session's single shared target has to pick one reference when 2 vehicles are tracked
+        if reference_index is None:  # ADDED
+            return None  # ADDED — reference vehicle hasn't resolved an index yet, try again next cycle
+        target = (reference_index + n // 2) % n  # ADDED — stop halfway around the loop from the reference vehicle's current position
+
+        for state in vehicle_states:  # ADDED — still must be valid for every tracked vehicle, not just the reference one
+            current_index = state.get('index')  # ADDED
+            if current_index is None:  # ADDED
+                return None  # ADDED
+            if target == current_index or target == (current_index - 1) % n:  # ADDED — same exclusion rule as random mode
+                return None  # ADDED — farthest point collides with a vehicle's exclusion zone this cycle (only realistic on short routes); deterministic, so no point retrying now — _advance_session will call again next maintenance pass once positions shift
+        return target  # ADDED
 
     for _ in range(TARGET_PICK_RETRIES):
         target = random.randrange(n)
