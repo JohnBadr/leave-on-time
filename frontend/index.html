@@ -1,0 +1,1618 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LeaveOnTime</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#0B0C0F" id="meta-theme-color">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   TOKENS
+   ============================================================ */
+:root{
+  --ink:#0C0E11;
+  --paper:#F5F6F8;
+  --signal:#F2A93B;
+  --signal-dim:#8A6420;
+  --transit:#2C6E8E;
+  --transit-hover:#255C78;
+  --transit-soft:#E4EEF2;
+  --alert:#D64550;
+  --alert-bg:#FDECEE;
+  --alert-border:#F3B4B9;
+
+  --bg:#F5F6F8;
+  --surface:#FFFFFF;
+  --surface-2:#EDEFF3;
+  --surface-3:#E3E6EC;
+  --border:#DEE2E8;
+  --text-1:#12141A;
+  --text-2:#585E6B;
+  --text-3:#8B909C;
+  --on-primary:#FFFFFF;
+
+  --board-bg:#14171C;
+  --board-text:#F2A93B;
+
+  --shadow-sm:0 1px 2px rgba(12,14,17,0.06);
+  --shadow-md:0 6px 20px rgba(12,14,17,0.08);
+  --shadow-lg:0 20px 60px rgba(12,14,17,0.18);
+
+  --r-sm:8px;
+  --r-md:12px;
+  --r-lg:18px;
+  --r-pill:999px;
+
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:24px; --sp-7:32px; --sp-8:48px;
+
+  --font-display:'Space Grotesk', 'Segoe UI', sans-serif;
+  --font-body:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono:'JetBrains Mono', ui-monospace, monospace;
+
+  --dur-fast:120ms;
+  --dur-med:220ms;
+  --dur-slow:360ms;
+  --ease:cubic-bezier(.4,0,.2,1);
+
+  --sidebar-w:236px;
+  --bottomnav-h:64px;
+  --safe-b:env(safe-area-inset-bottom, 0px);
+}
+
+html[data-theme="dark"]{
+  --bg:#0B0C0F;
+  --surface:#15181D;
+  --surface-2:#1C2025;
+  --surface-3:#262B32;
+  --border:#2A2F37;
+  --text-1:#F2F3F6;
+  --text-2:#A0A5B1;
+  --text-3:#686E7A;
+  --transit:#4E93B3;
+  --transit-hover:#5FA3C2;
+  --transit-soft:rgba(78,147,179,0.14);
+  --alert:#E8737C;
+  --alert-bg:rgba(214,69,80,0.14);
+  --alert-border:rgba(232,115,124,0.35);
+  --board-bg:#000000;
+  --shadow-sm:0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md:0 6px 20px rgba(0,0,0,0.35);
+  --shadow-lg:0 24px 64px rgba(0,0,0,0.55);
+}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{ animation-duration:0.01ms !important; animation-iteration-count:1 !important; transition-duration:0.01ms !important; }
+}
+
+/* ============================================================
+   RESET / BASE
+   ============================================================ */
+*,*::before,*::after{ box-sizing:border-box; }
+html,body{ height:100%; background:var(--bg); }
+:root{ color-scheme:light; }
+html[data-theme="dark"]{ color-scheme:dark; }
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text-1);
+  font-family:var(--font-body);
+  -webkit-font-smoothing:antialiased;
+  -webkit-tap-highlight-color:transparent;
+  transition:background var(--dur-med) var(--ease), color var(--dur-med) var(--ease);
+  overscroll-behavior-y:none;
+}
+button,input,select{ font-family:inherit; color:inherit; }
+button{ cursor:pointer; background:none; border:none; }
+button:focus-visible,input:focus-visible,[tabindex]:focus-visible{
+  outline:2px solid var(--transit); outline-offset:2px; border-radius:4px;
+}
+h1,h2,h3,h4{ font-family:var(--font-display); margin:0; letter-spacing:-0.01em; }
+p{ margin:0; }
+ul{ list-style:none; margin:0; padding:0; }
+::selection{ background:var(--transit); color:#fff; }
+
+/* ============================================================
+   APP SHELL
+   ============================================================ */
+#app{ min-height:100%; display:flex; flex-direction:column; background:var(--bg); }
+
+.topbar{
+  position:sticky; top:0; z-index:20;
+  display:flex; align-items:center; justify-content:space-between;
+  padding:14px var(--sp-5);
+  background:var(--bg);
+  border-bottom:1px solid var(--border);
+  transition:background var(--dur-med) var(--ease), border-color var(--dur-med) var(--ease);
+}
+.brand{ display:flex; align-items:center; gap:10px; }
+.brand-mark{
+  width:32px; height:32px; border-radius:9px;
+  background:var(--transit); color:#fff;
+  display:flex; align-items:center; justify-content:center;
+  flex-shrink:0;
+}
+.brand-mark svg{ width:18px; height:18px; }
+.brand-word{ font-family:var(--font-display); font-weight:700; font-size:18px; letter-spacing:-0.01em; }
+
+.theme-toggle{
+  position:relative;
+  width:40px; height:40px; border-radius:var(--r-pill);
+  display:flex; align-items:center; justify-content:center;
+  color:var(--text-2);
+  transition:background var(--dur-fast) var(--ease);
+}
+.theme-toggle:hover{ background:var(--surface-2); }
+.theme-toggle svg{ width:19px; height:19px; position:absolute; transition:opacity var(--dur-med) var(--ease), transform var(--dur-med) var(--ease); }
+.icon-sun{ opacity:1; transform:rotate(0deg) scale(1); }
+.icon-moon{ opacity:0; transform:rotate(-60deg) scale(.5); }
+html[data-theme="dark"] .icon-sun{ opacity:0; transform:rotate(60deg) scale(.5); }
+html[data-theme="dark"] .icon-moon{ opacity:1; transform:rotate(0deg) scale(1); color:var(--signal); }
+
+/* layout: sidebar (desktop) + content */
+.shell{ flex:1; display:flex; min-height:0; background:var(--bg); }
+
+.sidebar{
+  display:none;
+  width:var(--sidebar-w);
+  flex-shrink:0;
+  border-right:1px solid var(--border);
+  padding:var(--sp-5) var(--sp-3);
+  background:var(--bg);
+  transition:border-color var(--dur-med) var(--ease), background var(--dur-med) var(--ease);
+}
+.sidebar-item{
+  width:100%;
+  display:flex; align-items:center; gap:12px;
+  padding:11px 14px; border-radius:var(--r-md);
+  color:var(--text-2); font-weight:600; font-size:14.5px;
+  transition:background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.sidebar-item svg{ width:19px; height:19px; flex-shrink:0; }
+.sidebar-item:hover{ background:var(--surface-2); color:var(--text-1); }
+.sidebar-item.active{ background:var(--transit-soft); color:var(--transit); }
+.sidebar-item + .sidebar-item{ margin-top:4px; }
+
+.content{ flex:1; min-width:0; display:flex; flex-direction:column; padding-bottom:calc(var(--bottomnav-h) + var(--safe-b) + 24px); background:var(--bg); }
+
+/* bottom nav (mobile) */
+.bottom-nav{
+  position:fixed; left:0; right:0; bottom:0; z-index:20;
+  display:flex; justify-content:center; gap:56px;
+  background:var(--surface);
+  border-top:1px solid var(--border);
+  padding:9px 0 calc(9px + var(--safe-b));
+  transition:background var(--dur-med) var(--ease), border-color var(--dur-med) var(--ease);
+}
+.bottom-nav-item{
+  display:flex; flex-direction:column; align-items:center; gap:3px;
+  color:var(--text-3); font-size:11px; font-weight:600;
+  padding:4px 18px; border-radius:var(--r-sm);
+  transition:color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.bottom-nav-item svg{ width:23px; height:23px; }
+.bottom-nav-item.active{ color:var(--transit); }
+.bottom-nav-item:active{ transform:scale(.92); }
+
+@media (min-width:768px){
+  .sidebar{ display:block; }
+  .bottom-nav{ display:none; }
+  .content{ padding-bottom:var(--sp-7); }
+}
+
+/* ============================================================
+   VIEWS
+   ============================================================ */
+.view{ flex:1; padding:var(--sp-6) var(--sp-5); max-width:760px; width:100%; margin:0 auto; background:var(--bg); transition:background var(--dur-med) var(--ease); }
+.view[hidden]{ display:none; }
+
+.view-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--sp-5); }
+.view-header h1{ font-size:24px; font-weight:700; }
+.view-header p{ color:var(--text-2); font-size:14px; margin-top:2px; }
+
+.btn{
+  display:inline-flex; align-items:center; justify-content:center; gap:8px;
+  font-weight:600; font-size:14.5px; font-family:var(--font-body);
+  padding:11px 20px; border-radius:var(--r-md);
+  transition:background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
+  white-space:nowrap;
+}
+.btn:active{ transform:scale(.97); }
+.btn svg{ width:16px; height:16px; flex-shrink:0; }
+.btn--primary{ background:var(--transit); color:#fff; box-shadow:var(--shadow-sm); }
+.btn--primary:hover{ background:var(--transit-hover); }
+.btn--ghost{ background:var(--surface-2); color:var(--text-1); }
+.btn--ghost:hover{ background:var(--surface-3); }
+.btn--danger{ background:var(--alert); color:#fff; }
+.btn--danger:hover{ filter:brightness(1.08); }
+.btn--text{ background:none; color:var(--text-2); padding:6px 4px; font-size:13.5px; text-decoration:underline; text-underline-offset:3px; }
+.btn--text:hover{ color:var(--text-1); }
+.btn--block{ width:100%; }
+.btn[disabled]{ opacity:.45; pointer-events:none; }
+.btn-icon{ width:38px; height:38px; padding:0; border-radius:var(--r-sm); color:var(--text-2); background:var(--surface-2); }
+.btn-icon:hover{ background:var(--surface-3); color:var(--text-1); }
+.btn-icon.danger:hover{ background:var(--alert-bg); color:var(--alert); }
+
+/* Empty state */
+.empty-state{
+  flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  text-align:center; gap:var(--sp-4); padding:var(--sp-8) var(--sp-4);
+  min-height:50vh;
+  animation:fadeUp var(--dur-slow) var(--ease);
+}
+.empty-state svg{ width:52px; height:52px; color:var(--text-3); }
+.empty-state h2{ font-size:19px; font-weight:600; color:var(--text-1); }
+.empty-state p{ color:var(--text-2); font-size:14px; max-width:280px; }
+
+/* Schedule card list */
+.card-list{ display:flex; flex-direction:column; gap:var(--sp-3); }
+
+.card{
+  position:relative;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--r-lg);
+  padding:var(--sp-4) var(--sp-4);
+  box-shadow:var(--shadow-sm);
+  animation:fadeUp var(--dur-med) var(--ease) both;
+  transition:border-color var(--dur-med) var(--ease), background var(--dur-med) var(--ease);
+}
+.card--draft{ border-style:dashed; opacity:.78; cursor:pointer; }
+.card--draft:hover{ opacity:1; }
+.card-top{ display:flex; align-items:flex-start; justify-content:space-between; gap:var(--sp-3); margin-bottom:var(--sp-3); }
+.card-system{ font-size:12.5px; font-weight:700; color:var(--transit); text-transform:uppercase; letter-spacing:.03em; margin-bottom:3px; }
+.card-route-row{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:2px; }
+.route-tag{ display:inline-flex; align-items:center; gap:5px; font-size:12.5px; font-weight:600; color:var(--text-2); }
+.route-dot{ width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.card-path{ font-size:15px; font-weight:600; color:var(--text-1); margin-top:6px; }
+.card-path .arrow{ color:var(--text-3); margin:0 6px; }
+.draft-pill{
+  font-size:10.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
+  background:var(--surface-3); color:var(--text-2); padding:3px 9px; border-radius:var(--r-pill);
+  flex-shrink:0;
+}
+.card-actions{ display:flex; gap:8px; flex-shrink:0; }
+.card-bottom{ display:flex; align-items:center; justify-content:space-between; margin-top:var(--sp-3); padding-top:var(--sp-3); border-top:1px solid var(--border); }
+.card-repeat{ font-size:13px; color:var(--text-2); font-weight:500; }
+
+/* Signature: departure-board time chip */
+.board-chip{
+  display:inline-flex; align-items:baseline; gap:6px;
+  background:var(--board-bg);
+  border-radius:var(--r-sm);
+  padding:6px 11px;
+  animation:flip var(--dur-slow) var(--ease) both;
+}
+.board-chip .board-time{ font-family:var(--font-mono); font-weight:700; font-size:16px; color:var(--board-text); letter-spacing:.02em; font-variant-numeric:tabular-nums; }
+.board-chip .board-label{ font-family:var(--font-mono); font-weight:500; font-size:9.5px; color:#8A8F98; text-transform:uppercase; letter-spacing:.06em; }
+
+@keyframes flip{
+  0%{ transform:rotateX(-90deg); opacity:0; }
+  60%{ transform:rotateX(12deg); opacity:1; }
+  100%{ transform:rotateX(0deg); opacity:1; }
+}
+@keyframes fadeUp{ from{ opacity:0; transform:translateY(10px); } to{ opacity:1; transform:translateY(0); } }
+@keyframes fadeIn{ from{ opacity:0; } to{ opacity:1; } }
+@keyframes popIn{ 0%{ opacity:0; transform:scale(.7); } 100%{ opacity:1; transform:scale(1); } }
+@keyframes slideDown{ from{ opacity:0; transform:translateY(-10px); } to{ opacity:1; transform:translateY(0); } }
+@keyframes scaleIn{ from{ opacity:0; transform:scale(.94) translateY(8px); } to{ opacity:1; transform:scale(1) translateY(0); } }
+
+/* FAB (mobile) */
+.fab{
+  position:fixed; right:20px; bottom:calc(var(--bottomnav-h) + var(--safe-b) + 16px); z-index:15;
+  width:56px; height:56px; border-radius:50%;
+  background:var(--transit); color:#fff; box-shadow:var(--shadow-lg);
+  display:flex; align-items:center; justify-content:center;
+  animation:popIn var(--dur-med) var(--ease) both;
+  transition:transform var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.fab svg{ width:24px; height:24px; }
+.fab:hover{ background:var(--transit-hover); }
+.fab:active{ transform:scale(.92); }
+@media (min-width:768px){ .fab{ display:none; } }
+
+.desktop-add-btn{ display:none; }
+@media (min-width:768px){ .desktop-add-btn{ display:inline-flex; } }
+
+.drafts-tab{
+  position:fixed; right:0; top:50%; transform:translateY(-50%);
+  z-index:16;
+  display:flex; align-items:center; gap:8px;
+  background:var(--surface); color:var(--text-1);
+  border:1px solid var(--border); border-right:none;
+  padding:12px 16px 12px 12px;
+  border-radius:var(--r-md) 0 0 var(--r-md);
+  box-shadow:var(--shadow-md);
+  font-size:13px; font-weight:700;
+  animation:popIn var(--dur-med) var(--ease);
+  transition:background var(--dur-med) var(--ease), border-color var(--dur-med) var(--ease), padding-right var(--dur-fast) var(--ease);
+}
+.drafts-tab:hover{ padding-right:20px; }
+.drafts-tab:active{ transform:translateY(-50%) scale(.97); }
+.drafts-tab[hidden]{ display:none; }
+.drafts-tab svg{ width:16px; height:16px; color:var(--text-3); flex-shrink:0; }
+.drafts-tab-badge{
+  background:var(--transit); color:#fff; font-size:11px; font-weight:700;
+  min-width:18px; height:18px; border-radius:var(--r-pill);
+  display:flex; align-items:center; justify-content:center; padding:0 5px;
+}
+
+/* Profile "in construction" */
+.construction{
+  flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  text-align:center; gap:var(--sp-3); min-height:50vh; animation:fadeUp var(--dur-slow) var(--ease);
+}
+.construction .emoji{ font-size:44px; }
+.construction h2{ font-size:19px; font-weight:600; }
+.construction p{ color:var(--text-2); font-size:14px; }
+
+/* ============================================================
+   OVERLAYS / MODAL
+   ============================================================ */
+.overlay{
+  position:fixed; inset:0; z-index:50;
+  background:rgba(8,9,11,0.5);
+  display:flex; align-items:flex-end; justify-content:center;
+  animation:fadeIn var(--dur-fast) var(--ease);
+  backdrop-filter:blur(2px);
+}
+.overlay[hidden]{ display:none; }
+@media (min-width:640px){ .overlay{ align-items:center; padding:24px; } }
+
+.modal{
+  background:var(--surface);
+  width:100%; max-width:560px;
+  max-height:92vh; max-height:92dvh;
+  border-radius:20px 20px 0 0;
+  display:flex; flex-direction:column;
+  box-shadow:var(--shadow-lg);
+  animation:scaleIn var(--dur-med) var(--ease);
+  overflow:hidden;
+}
+@media (min-width:640px){ .modal{ border-radius:var(--r-lg); max-height:88vh; } }
+
+.modal-header{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:16px var(--sp-5) 12px;
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+.modal-title{ font-size:16px; font-weight:700; font-family:var(--font-display); }
+.modal-body{ padding:var(--sp-5); overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:var(--sp-6); }
+.modal-footer{ display:flex; gap:10px; padding:var(--sp-4) var(--sp-5); border-top:1px solid var(--border); flex-shrink:0; }
+.modal-footer .btn{ flex:1; }
+
+.error-banner{
+  display:flex; align-items:center; gap:9px;
+  background:var(--alert-bg); border:1px solid var(--alert-border); color:var(--alert);
+  padding:11px 14px; border-radius:var(--r-md); font-size:13.5px; font-weight:600;
+  margin:0 var(--sp-5); margin-top:var(--sp-4);
+  animation:slideDown var(--dur-fast) var(--ease);
+}
+.error-banner[hidden]{ display:none; }
+.error-banner svg{ width:16px; height:16px; flex-shrink:0; }
+
+/* form section (progressive disclosure) */
+.f-section{ transition:opacity var(--dur-med) var(--ease), filter var(--dur-med) var(--ease); }
+.f-section.locked{ opacity:.4; filter:grayscale(.3); pointer-events:none; }
+.f-label{ display:block; font-size:12.5px; font-weight:700; color:var(--text-2); text-transform:uppercase; letter-spacing:.03em; margin-bottom:9px; }
+
+/* Custom dropdown */
+.dd{ position:relative; }
+.dd-input-wrap{
+  display:flex; flex-wrap:wrap; align-items:center; gap:6px;
+  min-height:48px; padding:8px 12px;
+  background:var(--surface-2); border:1.5px solid var(--border); border-radius:var(--r-md);
+  transition:border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.dd-input-wrap:hover{ border-color:var(--text-3); }
+.dd.open .dd-input-wrap{ border-color:var(--transit); background:var(--surface); }
+.dd-input-wrap input{
+  flex:1; min-width:90px; border:none; background:none; outline:none;
+  font-size:14.5px; color:var(--text-1); padding:4px 2px;
+}
+.dd-input-wrap input::placeholder{ color:var(--text-3); }
+.dd-chevron{ width:16px; height:16px; color:var(--text-3); flex-shrink:0; transition:transform var(--dur-fast) var(--ease); }
+.dd.open .dd-chevron{ transform:rotate(180deg); }
+
+.dd-list{
+  position:fixed; z-index:60;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--r-md);
+  box-shadow:var(--shadow-lg);
+  overflow-y:auto; padding:6px;
+  animation:fadeIn var(--dur-fast) var(--ease);
+}
+.dd-list[hidden]{ display:none; }
+.dd-option{
+  display:flex; align-items:center; gap:9px;
+  padding:10px 11px; border-radius:var(--r-sm);
+  font-size:14px; color:var(--text-3); font-weight:500;
+  transition:background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.dd-option:hover{ background:var(--surface-2); color:var(--text-1); }
+.dd-option.selected{ color:var(--text-1); font-weight:600; }
+.dd-option.selected .dd-check{ opacity:1; }
+.dd-option .dd-check{ opacity:0; width:15px; height:15px; color:var(--transit); margin-left:auto; flex-shrink:0; }
+.dd-option-dot{ width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.dd-empty{ padding:14px 11px; font-size:13px; color:var(--text-3); text-align:center; }
+
+/* chips inside multi dropdown */
+.chip{
+  display:inline-flex; align-items:center; gap:6px;
+  background:var(--transit); color:#fff; font-size:13px; font-weight:600;
+  padding:5px 6px 5px 10px; border-radius:var(--r-pill);
+  animation:popIn var(--dur-fast) var(--ease);
+}
+.chip-dot{ width:7px; height:7px; border-radius:50%; background:rgba(255,255,255,.85); flex-shrink:0; }
+.chip-x{ width:17px; height:17px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#fff; background:rgba(255,255,255,.2); flex-shrink:0; transition:background var(--dur-fast) var(--ease); }
+.chip-x:hover{ background:rgba(255,255,255,.35); }
+.chip-x svg{ width:10px; height:10px; }
+
+/* path method option cards */
+.option-cards{ display:flex; flex-direction:column; gap:10px; }
+.option-card{
+  display:flex; align-items:flex-start; gap:12px; text-align:left;
+  padding:14px 15px; border-radius:var(--r-md); border:1.5px solid var(--border);
+  background:var(--surface-2);
+  transition:border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.option-card:hover{ border-color:var(--text-3); }
+.option-card.selected{ border-color:var(--transit); background:var(--transit-soft); }
+.option-card-radio{
+  width:19px; height:19px; border-radius:50%; border:2px solid var(--text-3); flex-shrink:0; margin-top:1px;
+  display:flex; align-items:center; justify-content:center; transition:border-color var(--dur-fast) var(--ease);
+}
+.option-card.selected .option-card-radio{ border-color:var(--transit); }
+.option-card-radio-dot{ width:9px; height:9px; border-radius:50%; background:var(--transit); opacity:0; transition:opacity var(--dur-fast) var(--ease); }
+.option-card.selected .option-card-radio-dot{ opacity:1; }
+.option-card-text{ font-size:14px; font-weight:500; color:var(--text-1); line-height:1.4; }
+
+.map-stub-row{ display:flex; flex-direction:column; gap:8px; margin-top:12px; }
+.map-stub-btn{
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  padding:13px 15px; border-radius:var(--r-md); border:1.5px dashed var(--border);
+  background:var(--surface-2); font-size:14px; font-weight:600; color:var(--text-1);
+}
+.map-stub-btn:hover{ border-color:var(--text-3); }
+.map-stub-note{ font-size:12px; color:var(--text-3); text-align:center; padding:2px 4px 0; }
+
+.field-row{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.field{ display:flex; flex-direction:column; gap:6px; }
+.field label{ font-size:12.5px; font-weight:600; color:var(--text-2); }
+.field input[type="number"],.field input[type="date"],.field input[type="time"]{
+  padding:11px 12px; border-radius:var(--r-md); border:1.5px solid var(--border);
+  background:var(--surface-2); font-size:14.5px; color:var(--text-1); width:100%;
+  transition:border-color var(--dur-fast) var(--ease);
+}
+.field input:focus{ outline:none; border-color:var(--transit); background:var(--surface); }
+.walk-unit{ font-size:12px; color:var(--text-3); margin-top:2px; }
+
+.mind-change{ margin-top:10px; text-align:center; }
+
+/* segmented control */
+.segmented{ display:flex; gap:6px; background:var(--surface-2); border-radius:var(--r-md); padding:4px; }
+.segmented-btn{
+  flex:1; padding:9px 8px; border-radius:8px; font-size:13.5px; font-weight:600; color:var(--text-2);
+  transition:background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.segmented-btn.selected{ background:var(--surface); color:var(--transit); box-shadow:var(--shadow-sm); }
+
+/* mini prompts (discard/keep, delete confirm) */
+.mini-modal{
+  background:var(--surface); border-radius:var(--r-lg); padding:var(--sp-5);
+  width:100%; max-width:340px; box-shadow:var(--shadow-lg);
+  animation:scaleIn var(--dur-med) var(--ease); text-align:center;
+}
+.mini-modal h3{ font-size:16px; font-weight:700; margin-bottom:6px; }
+.mini-modal p{ font-size:13.5px; color:var(--text-2); margin-bottom:var(--sp-5); line-height:1.5; }
+.mini-modal-actions{ display:flex; flex-direction:column; gap:8px; }
+
+/* misc */
+.hidden{ display:none !important; }
+.sr-only{ position:absolute; width:1px;height:1px; overflow:hidden; clip:rect(0,0,0,0); }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="3"/><path d="M3 10h18"/><path d="M8 2v4"/><path d="M16 2v4"/><path d="m9 16 2 2 4-4"/></svg>
+      </div>
+      <span class="brand-word">LeaveOnTime</span>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode">
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+  </header>
+
+  <div class="shell">
+    <nav class="sidebar">
+      <button class="sidebar-item active" id="side-schedules" data-view="schedules">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/></svg>
+        Schedules
+      </button>
+      <button class="sidebar-item" id="side-profile" data-view="profile">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/></svg>
+        Profile
+      </button>
+    </nav>
+
+    <main class="content">
+      <section class="view" id="view-schedules"></section>
+      <section class="view" id="view-profile" hidden>
+        <div class="construction">
+          <div class="emoji">⛏️</div>
+          <h2>In construction</h2>
+          <p>Your profile is being built. Check back soon.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <nav class="bottom-nav">
+    <button class="bottom-nav-item active" id="bottom-schedules" data-view="schedules">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/></svg>
+      Schedules
+    </button>
+    <button class="bottom-nav-item" id="bottom-profile" data-view="profile">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/></svg>
+      Profile
+    </button>
+  </nav>
+
+  <button class="fab hidden" id="fab" aria-label="Create schedule">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+
+  <button class="drafts-tab" id="drafts-tab" hidden aria-label="View drafts">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+    <span>Drafts</span>
+    <span class="drafts-tab-badge" id="drafts-tab-count">0</span>
+  </button>
+</div>
+
+<!-- Dropdown option lists render here, outside the modal's own scroll container, so a list
+     opened near the bottom of a long form is never clipped/unreachable -->
+<div class="dd-list" id="dd-portal" hidden></div>
+
+<!-- ===================== WIZARD MODAL ===================== -->
+<div class="overlay" id="wizard-overlay" hidden>
+  <div class="modal" id="wizard-modal" role="dialog" aria-modal="true">
+    <div class="modal-header">
+      <span class="modal-title" id="wizard-title">New schedule</span>
+      <button class="btn-icon" id="wizard-close" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="error-banner" id="wizard-error" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M18 6 6 18M6 6l12 12"/></svg>
+      <span id="wizard-error-text"></span>
+    </div>
+    <div class="modal-body" id="wizard-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn--ghost" id="wizard-cancel">Cancel</button>
+      <button class="btn btn--primary" id="wizard-save">Save schedule</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== DISCARD / KEEP-AS-DRAFT PROMPT ===================== -->
+<div class="overlay" id="discard-prompt" hidden>
+  <div class="mini-modal">
+    <h3>Keep this as a draft?</h3>
+    <p>You can pick up right where you left off, or discard it for good.</p>
+    <div class="mini-modal-actions">
+      <button class="btn btn--primary btn--block" id="discard-keep">Keep as draft</button>
+      <button class="btn btn--ghost btn--block" id="discard-toss">Discard</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== DELETE CONFIRM ===================== -->
+<div class="overlay" id="delete-confirm" hidden>
+  <div class="mini-modal">
+    <h3 id="delete-confirm-title">Delete this schedule?</h3>
+    <p>This can't be undone.</p>
+    <div class="mini-modal-actions">
+      <button class="btn btn--danger btn--block" id="delete-confirm-yes">Delete</button>
+      <button class="btn btn--ghost btn--block" id="delete-confirm-no">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== DRAFTS PANEL ===================== -->
+<div class="overlay" id="drafts-overlay" hidden>
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header">
+      <span class="modal-title">Drafts</span>
+      <button class="btn-icon" id="drafts-close" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="drafts-body"></div>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============================================================
+   MOCK ROUTEGRAPH DATA
+   Stand-in for a real fetch('/api/systems') etc. against routegraph.db.
+   Shape mirrors the real schema (systems / route_graphs / stops) exactly
+   so swapping this for a live Flask endpoint later is a drop-in.
+   ============================================================ */
+const MOCK_SYSTEMS = [
+  { system_id: 2343, name: "USF Bull Runner", precomputed: 1 },
+  { system_id: 9001, name: "Sample State University Shuttle", precomputed: 0 },
+  { system_id: 9002, name: "Example College Transit", precomputed: 0 },
+];
+
+const MOCK_ROUTES = {
+  2343: [
+    { route_graph_id: 1, route_name: "Red",           color: "#D64550" },
+    { route_graph_id: 2, route_name: "Green",          color: "#3F9142" },
+    { route_graph_id: 3, route_name: "Green Detour",   color: "#7CC47F" },
+    { route_graph_id: 4, route_name: "Purple",         color: "#7C5CD6" },
+    { route_graph_id: 5, route_name: "Orange Detour",  color: "#E08A2E" },
+  ]
+};
+
+// ordered stop sequence per route (mirrors get_stop_sequence() output shape, trimmed to id+name)
+const MOCK_STOPS = {
+  1: [ {stop_id:"MSC",name:"Marshall Student Center"}, {stop_id:"CH",name:"Crescent Hill"}, {stop_id:"GV",name:"Greek Village"}, {stop_id:"JP",name:"Juniper-Poplar Hall"}, {stop_id:"ENB",name:"Engineering Building (ENB)"}, {stop_id:"CG",name:"Collins Garage"}, {stop_id:"BH",name:"Beard Hall"} ],
+  2: [ {stop_id:"MSC",name:"Marshall Student Center"}, {stop_id:"BH",name:"Beard Hall"}, {stop_id:"ENB",name:"Engineering Building (ENB)"}, {stop_id:"CG",name:"Collins Garage"} ],
+  3: [ {stop_id:"MSC",name:"Marshall Student Center"}, {stop_id:"YC",name:"Yuengling Center"} ],
+  4: [ {stop_id:"GV",name:"Greek Village"}, {stop_id:"JP",name:"Juniper-Poplar Hall"}, {stop_id:"LIB",name:"Library"} ],
+  5: [ {stop_id:"BH",name:"Beard Hall"}, {stop_id:"ENB",name:"Engineering Building (ENB)"} ],
+};
+
+function mockGetSystems(){
+  // only systems whose route graph has actually been precomputed are selectable
+  return MOCK_SYSTEMS.filter(s => s.precomputed === 1).sort((a,b) => a.name.localeCompare(b.name));
+}
+function mockGetRoutes(systemId){
+  return (MOCK_ROUTES[systemId] || []).slice().sort((a,b) => a.route_name.localeCompare(b.route_name));
+}
+function mockGetRouteStops(routeGraphId){
+  return MOCK_STOPS[routeGraphId] || [];
+}
+
+/* ============================================================
+   ICONS
+   ============================================================ */
+const ICON = {
+  edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
+  x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+  calendarEmpty: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="3"/><path d="M3 10h18M8 2v4M16 2v4"/></svg>',
+};
+
+/* ============================================================
+   STATE
+   ============================================================ */
+const state = {
+  theme: 'dark',
+  view: 'schedules',
+  schedules: [],         // {id, status:'draft'|'active', ...fields}
+  lastUsedSystemId: null,
+  scheduleCounter: 1,
+  wizard: null,           // active wizard session, see openWizard()
+  deleteTargetId: null,
+};
+
+const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+
+function newId(){ return 'sch_' + (state.scheduleCounter++) + '_' + Math.random().toString(36).slice(2,7); }
+
+function blankScheduleData(){
+  return {
+    systemId: null, systemName: null,
+    routeIds: [],
+    pathMethod: null,           // 'map' | 'manual'
+    mapAcknowledged: false,     // whether they've clicked into the (stub) map flow
+    boardingStopId: null, boardingStopName: null,
+    dropoffStopId: null, dropoffStopName: null,
+    walkToBoardingMin: '', walkFromDropoffMin: '',
+    repeatType: null,           // 'daily' | 'weekly' | 'none'
+    weeklyDays: [],             // e.g. ['Monday','Wednesday'] — same arrival time applies to all
+    oneTimeDate: '',
+    arrivalTime: '',
+  };
+}
+
+/* ============================================================
+   UTIL
+   ============================================================ */
+function intersectStopsAcrossRoutes(routeIds){
+  if (routeIds.length === 0) return [];
+  let common = mockGetRouteStops(routeIds[0]).map(s => s.stop_id);
+  for (let i = 1; i < routeIds.length; i++){
+    const ids = new Set(mockGetRouteStops(routeIds[i]).map(s => s.stop_id));
+    common = common.filter(id => ids.has(id));
+  }
+  // resolve to full stop objects (name lookup from the first route that has it)
+  const allStops = {};
+  routeIds.forEach(rid => mockGetRouteStops(rid).forEach(s => { allStops[s.stop_id] = s; }));
+  return common.map(id => allStops[id]);
+}
+
+function formatTime12(hhmm){
+  if (!hhmm) return '';
+  const [h, m] = hhmm.split(':').map(Number);
+  const period = h >= 12 ? 'PM' : 'AM';
+  const h12 = ((h + 11) % 12) + 1;
+  return h12 + ':' + String(m).padStart(2,'0') + ' ' + period;
+}
+function formatDateShort(yyyymmdd){
+  if (!yyyymmdd) return '';
+  const d = new Date(yyyymmdd + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { month:'short', day:'numeric' });
+}
+const DAY_ABBR = {Monday:'Mon',Tuesday:'Tue',Wednesday:'Wed',Thursday:'Thu',Friday:'Fri',Saturday:'Sat',Sunday:'Sun'};
+function sortDays(days){
+  return [...days].sort((a,b) => DAYS.indexOf(a) - DAYS.indexOf(b));
+}
+function repeatSummary(d){
+  if (d.repeatType === 'daily') return 'Every day';
+  if (d.repeatType === 'weekly'){
+    if (!d.weeklyDays.length) return 'Weekly';
+    if (d.weeklyDays.length === 1) return 'Every ' + d.weeklyDays[0];
+    return 'Every ' + sortDays(d.weeklyDays).map(day => DAY_ABBR[day]).join(', ');
+  }
+  if (d.repeatType === 'none') return d.oneTimeDate ? formatDateShort(d.oneTimeDate) : 'One time';
+  return 'Not set';
+}
+
+/* ============================================================
+   RENDER: SHELL / NAV
+   ============================================================ */
+function setView(view){
+  state.view = view;
+  document.getElementById('view-schedules').hidden = view !== 'schedules';
+  document.getElementById('view-profile').hidden = view !== 'profile';
+  [['side-schedules','schedules'],['side-profile','profile'],['bottom-schedules','schedules'],['bottom-profile','profile']]
+    .forEach(([id, v]) => document.getElementById(id).classList.toggle('active', v === view));
+  if (view === 'schedules') renderSchedulesView();
+}
+
+function applyTheme(){
+  document.documentElement.setAttribute('data-theme', state.theme);
+  document.getElementById('meta-theme-color').setAttribute('content', state.theme === 'dark' ? '#0B0C0F' : '#F5F6F8');
+}
+
+/* ============================================================
+   RENDER: SCHEDULES VIEW
+   ============================================================ */
+function renderSchedulesView(){
+  const root = document.getElementById('view-schedules');
+  const fab = document.getElementById('fab');
+  const active = state.schedules.filter(s => s.status === 'active');
+
+  renderDraftsTab();
+
+  if (active.length === 0){
+    fab.classList.add('hidden');
+    root.innerHTML = `
+      <div class="empty-state">
+        ${ICON.calendarEmpty}
+        <h2>No schedules yet</h2>
+        <p>Set one up and LeaveOnTime will tell you exactly when to walk out the door.</p>
+        <button class="btn btn--primary" id="create-first-btn">
+          ${ICON.calendarEmpty.replace('width="24" height="24"','')}
+          Create your first schedule
+        </button>
+      </div>`;
+    document.getElementById('create-first-btn').addEventListener('click', () => openWizard('draft', null));
+    return;
+  }
+
+  fab.classList.remove('hidden');
+
+  const cardsHtml = active.map(renderScheduleCard).join('');
+  root.innerHTML = `
+    <div class="view-header">
+      <div>
+        <h1>Your schedules</h1>
+        <p>${active.length} schedule${active.length === 1 ? '' : 's'}</p>
+      </div>
+      <button class="btn btn--primary desktop-add-btn" id="desktop-add-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+        New schedule
+      </button>
+    </div>
+    <div class="card-list">${cardsHtml}</div>
+  `;
+
+  document.getElementById('desktop-add-btn').addEventListener('click', () => openWizard('draft', null));
+  root.querySelectorAll('[data-edit-schedule]').forEach(el => {
+    el.addEventListener('click', (e) => { e.stopPropagation(); openWizard('edit', el.dataset.editSchedule); });
+  });
+  root.querySelectorAll('[data-delete-schedule]').forEach(el => {
+    el.addEventListener('click', (e) => { e.stopPropagation(); askDelete(el.dataset.deleteSchedule); });
+  });
+}
+
+function routeTagsHtml(s){
+  const routes = s.routeIds.map(rid => mockGetRoutes(s.systemId).find(r => r.route_graph_id === rid)).filter(Boolean);
+  return routes.map(r => `<span class="route-tag"><span class="route-dot" style="background:${r.color}"></span>${r.route_name}</span>`).join('');
+}
+
+function renderScheduleCard(s){
+  const pathText = (s.pathMethod === 'manual' && s.boardingStopName && s.dropoffStopName)
+    ? `${s.boardingStopName}<span class="arrow">→</span>${s.dropoffStopName}`
+    : 'Route pending setup';
+
+  return `
+    <div class="card">
+      <div class="card-top">
+        <div>
+          <div class="card-system">${s.systemName || ''}</div>
+          <div class="card-route-row">${routeTagsHtml(s)}</div>
+          <div class="card-path">${pathText}</div>
+        </div>
+        <div class="card-actions">
+          <button class="btn-icon" data-edit-schedule="${s.id}" aria-label="Edit schedule">${ICON.edit}</button>
+          <button class="btn-icon danger" data-delete-schedule="${s.id}" aria-label="Delete schedule">${ICON.trash}</button>
+        </div>
+      </div>
+      <div class="card-bottom">
+        <span class="card-repeat">${repeatSummary(s)}</span>
+        <span class="board-chip">
+          <span class="board-label">Arrive</span>
+          <span class="board-time">${s.arrivalTime ? formatTime12(s.arrivalTime) : '—'}</span>
+        </span>
+      </div>
+    </div>`;
+}
+
+function renderDraftCard(s){
+  const label = s.systemName ? s.systemName : 'Untitled draft';
+  return `
+    <div class="card card--draft" data-resume-draft="${s.id}">
+      <div class="card-top">
+        <div>
+          <div class="card-system">${label}</div>
+          <div class="card-route-row">${routeTagsHtml(s) || '<span class="route-tag">No routes selected yet</span>'}</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span class="draft-pill">Draft</span>
+          <button class="btn-icon danger" data-delete-schedule="${s.id}" aria-label="Delete draft">${ICON.trash}</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+/* ============================================================
+   DRAFTS SIDE TAB + PANEL
+   ============================================================ */
+function renderDraftsTab(){
+  const drafts = state.schedules.filter(s => s.status === 'draft');
+  const tab = document.getElementById('drafts-tab');
+  tab.hidden = drafts.length === 0;
+  document.getElementById('drafts-tab-count').textContent = drafts.length;
+}
+
+function openDraftsPanel(){
+  renderDraftsPanelBody();
+  document.getElementById('drafts-overlay').hidden = false;
+}
+function closeDraftsPanel(){
+  document.getElementById('drafts-overlay').hidden = true;
+  document.getElementById('drafts-body').innerHTML = '';
+}
+function renderDraftsPanelBody(){
+  const drafts = state.schedules.filter(s => s.status === 'draft');
+  const body = document.getElementById('drafts-body');
+  if (drafts.length === 0){
+    closeDraftsPanel();
+    return;
+  }
+  body.innerHTML = `<div class="card-list">${drafts.map(renderDraftCard).join('')}</div>`;
+  body.querySelectorAll('[data-resume-draft]').forEach(el => {
+    el.addEventListener('click', () => { closeDraftsPanel(); openWizard('draft', el.dataset.resumeDraft); });
+  });
+  body.querySelectorAll('[data-delete-schedule]').forEach(el => {
+    el.addEventListener('click', (e) => { e.stopPropagation(); askDelete(el.dataset.deleteSchedule); });
+  });
+}
+
+document.getElementById('drafts-tab').addEventListener('click', openDraftsPanel);
+document.getElementById('drafts-close').addEventListener('click', closeDraftsPanel);
+document.getElementById('drafts-overlay').addEventListener('mousedown', (e) => {
+  if (e.target.id === 'drafts-overlay') closeDraftsPanel();
+});
+
+/* ============================================================
+   DELETE FLOW
+   ============================================================ */
+function askDelete(id){
+  state.deleteTargetId = id;
+  document.getElementById('delete-confirm').hidden = false;
+}
+document.getElementById('delete-confirm-no').addEventListener('click', () => {
+  state.deleteTargetId = null;
+  document.getElementById('delete-confirm').hidden = true;
+});
+document.getElementById('delete-confirm-yes').addEventListener('click', () => {
+  state.schedules = state.schedules.filter(s => s.id !== state.deleteTargetId);
+  state.deleteTargetId = null;
+  document.getElementById('delete-confirm').hidden = true;
+  renderSchedulesView();
+  if (!document.getElementById('drafts-overlay').hidden) renderDraftsPanelBody();
+});
+
+/* ============================================================
+   WIZARD: open / close / dirty tracking
+   mode: 'draft' (new or resuming a draft) | 'edit' (editing a saved active schedule)
+   targetId: existing schedule id to resume/edit, or null for a brand new draft
+   ============================================================ */
+const wizardUI = {
+  openDropdown: null,   // 'system' | 'routes' | 'day' | 'boarding' | 'dropoff' | null
+  errorTimeout: null,
+};
+
+function openWizard(mode, targetId){
+  let data, scheduleId;
+
+  if (mode === 'edit'){
+    const existing = state.schedules.find(s => s.id === targetId);
+    data = Object.assign(blankScheduleData(), JSON.parse(JSON.stringify(existing)));
+    scheduleId = targetId;
+  } else if (targetId){
+    // resuming an existing draft
+    const existing = state.schedules.find(s => s.id === targetId);
+    data = Object.assign(blankScheduleData(), JSON.parse(JSON.stringify(existing)));
+    scheduleId = targetId;
+  } else {
+    // brand new draft
+    data = blankScheduleData();
+    if (state.lastUsedSystemId){
+      const sys = mockGetSystems().find(s => s.system_id === state.lastUsedSystemId);
+      if (sys){ data.systemId = sys.system_id; data.systemName = sys.name; }
+    }
+    scheduleId = newId();
+  }
+
+  state.wizard = { mode, scheduleId, data, isDirty: mode === 'edit' ? false : (data.systemId != null) };
+  wizardUI.openDropdown = null;
+
+  document.getElementById('wizard-title').textContent = mode === 'edit' ? 'Edit schedule' : 'New schedule';
+  document.getElementById('wizard-overlay').hidden = false;
+  hideWizardError(true);
+  renderWizardBody();
+}
+
+function closeWizardSilently(){
+  document.getElementById('wizard-overlay').hidden = true;
+  state.wizard = null;
+  wizardUI.openDropdown = null;
+  const portal = document.getElementById('dd-portal');
+  portal.hidden = true;
+  portal.innerHTML = '';
+  renderSchedulesView();
+}
+
+function requestCloseWizard(){
+  const w = state.wizard;
+  if (!w) return;
+  if (w.mode === 'edit'){
+    // per spec: edit changes only ever commit on Save. Walking away = silently discard, no prompt.
+    closeWizardSilently();
+    return;
+  }
+  // draft mode
+  if (!w.isDirty){
+    // nothing meaningful entered yet — nothing to discard or keep, just close
+    // also make sure no stray empty draft got left in the list
+    state.schedules = state.schedules.filter(s => s.id !== w.scheduleId || s.status !== 'draft' );
+    closeWizardSilently();
+    return;
+  }
+  document.getElementById('discard-prompt').hidden = false;
+}
+
+document.getElementById('wizard-close').addEventListener('click', requestCloseWizard);
+document.getElementById('wizard-cancel').addEventListener('click', requestCloseWizard);
+
+// click outside modal (on the overlay backdrop itself) = silent autosave-as-draft, no prompt
+document.getElementById('wizard-overlay').addEventListener('mousedown', (e) => {
+  if (e.target.id === 'wizard-overlay'){
+    const w = state.wizard;
+    if (!w) return;
+    if (w.mode === 'edit' || !w.isDirty){
+      requestCloseWizard(); // reuses the same silent-discard / nothing-to-save logic
+    } else {
+      saveDraftSnapshot();
+      closeWizardSilently();
+    }
+  }
+});
+
+document.getElementById('discard-keep').addEventListener('click', () => {
+  document.getElementById('discard-prompt').hidden = true;
+  saveDraftSnapshot();
+  closeWizardSilently();
+});
+document.getElementById('discard-toss').addEventListener('click', () => {
+  document.getElementById('discard-prompt').hidden = true;
+  const w = state.wizard;
+  if (w) state.schedules = state.schedules.filter(s => s.id !== w.scheduleId);
+  closeWizardSilently();
+});
+
+function saveDraftSnapshot(){
+  const w = state.wizard;
+  if (!w || w.mode !== 'draft') return;
+  const idx = state.schedules.findIndex(s => s.id === w.scheduleId);
+  const entry = Object.assign({ id: w.scheduleId, status: 'draft' }, JSON.parse(JSON.stringify(w.data)));
+  if (idx === -1) state.schedules.push(entry);
+  else state.schedules[idx] = entry;
+}
+
+function markDirtyAndAutosave(){
+  const w = state.wizard;
+  if (!w) return;
+  w.isDirty = true;
+  if (w.mode === 'draft') saveDraftSnapshot();
+}
+
+/* ============================================================
+   WIZARD: cascading resets
+   ============================================================ */
+function resetPathSelection(d){
+  d.pathMethod = null;
+  d.mapAcknowledged = false;
+  d.boardingStopId = null; d.boardingStopName = null;
+  d.dropoffStopId = null; d.dropoffStopName = null;
+  d.walkToBoardingMin = ''; d.walkFromDropoffMin = '';
+}
+function resetRoutesAndPath(d){
+  d.routeIds = [];
+  resetPathSelection(d);
+}
+
+/* ============================================================
+   WIZARD: validation
+   ============================================================ */
+function validateSchedule(d){
+  if (!d.systemId) return "Please select your bus system.";
+  if (d.routeIds.length < 1) return "Please select at least one route.";
+  if (!d.pathMethod) return "Please choose how you'd like to set your stops.";
+  if (d.pathMethod === 'map') return "Map-based selection isn't connected yet — use \"Manually enter my stops\" for now.";
+  if (d.pathMethod === 'manual'){
+    if (!d.boardingStopId || !d.dropoffStopId) return "Please select a boarding and drop-off stop.";
+    if (d.boardingStopId === d.dropoffStopId) return "Boarding and drop-off stops must be different.";
+    if (d.walkToBoardingMin === '' || d.walkFromDropoffMin === '') return "Please enter both walking times.";
+  }
+  if (!d.repeatType) return "Please choose how often this schedule repeats.";
+  if (d.repeatType === 'daily' && !d.arrivalTime) return "Please pick a time.";
+  if (d.repeatType === 'weekly' && (d.weeklyDays.length === 0 || !d.arrivalTime)) return "Please pick at least one day and a time.";
+  if (d.repeatType === 'none' && (!d.oneTimeDate || !d.arrivalTime)) return "Please pick a date and time.";
+  return null;
+}
+
+function showWizardError(msg){
+  clearTimeout(wizardUI.errorTimeout);
+  const banner = document.getElementById('wizard-error');
+  document.getElementById('wizard-error-text').textContent = msg;
+  banner.hidden = false;
+  wizardUI.errorTimeout = setTimeout(() => hideWizardError(), 4000);
+}
+function hideWizardError(instant){
+  const banner = document.getElementById('wizard-error');
+  banner.hidden = true;
+  if (!instant) clearTimeout(wizardUI.errorTimeout);
+}
+
+document.getElementById('wizard-save').addEventListener('click', () => {
+  const w = state.wizard;
+  if (!w) return;
+  const err = validateSchedule(w.data);
+  if (err){ showWizardError(err); return; }
+
+  const idx = state.schedules.findIndex(s => s.id === w.scheduleId);
+  const entry = Object.assign({ id: w.scheduleId, status: 'active' }, JSON.parse(JSON.stringify(w.data)));
+  if (idx === -1) state.schedules.push(entry);
+  else state.schedules[idx] = entry;
+
+  state.lastUsedSystemId = w.data.systemId;
+  document.getElementById('wizard-overlay').hidden = true;
+  state.wizard = null;
+  renderSchedulesView();
+});
+
+/* ============================================================
+   WIZARD: BODY RENDER
+   ============================================================ */
+function renderWizardBody(){
+  const w = state.wizard;
+  if (!w) return;
+  const d = w.data;
+  const body = document.getElementById('wizard-body');
+
+  const systemsLocked = false;
+  const routesLocked = !d.systemId;
+  const pathLocked = d.routeIds.length < 1;
+  const timeLocked = d.routeIds.length < 1;
+
+  const commonStops = intersectStopsAcrossRoutes(d.routeIds);
+
+  body.innerHTML = `
+    <div class="f-section">
+      <span class="f-label">Bus system</span>
+      ${renderDropdown({
+        name:'system', mode:'single', placeholder:'Select your bus system',
+        options: mockGetSystems().map(s => ({id:s.system_id, label:s.name})),
+        selectedIds: d.systemId != null ? [d.systemId] : [],
+      })}
+    </div>
+
+    <div class="f-section ${routesLocked ? 'locked':''}">
+      <span class="f-label">Route(s)</span>
+      ${renderDropdown({
+        name:'routes', mode:'multi', placeholder:'Select your route(s)',
+        options: mockGetRoutes(d.systemId).map(r => ({id:r.route_graph_id, label:r.route_name, color:r.color})),
+        selectedIds: d.routeIds,
+      })}
+    </div>
+
+    <div class="f-section ${pathLocked ? 'locked':''}">
+      <span class="f-label">How should we find your stops?</span>
+      ${!d.pathMethod ? `
+      <div class="option-cards">
+        <button class="option-card" data-path-option="map">
+          <span class="option-card-radio"><span class="option-card-radio-dot"></span></span>
+          <span class="option-card-text">Enter your departure and destination locations and let us take care of the rest</span>
+        </button>
+        <button class="option-card" data-path-option="manual">
+          <span class="option-card-radio"><span class="option-card-radio-dot"></span></span>
+          <span class="option-card-text">Manually enter my stops</span>
+        </button>
+      </div>
+      ` : ''}
+
+      ${d.pathMethod === 'map' ? `
+        <div class="map-stub-row">
+          <button class="map-stub-btn" type="button" disabled>📍 Select my departure on the map</button>
+          <button class="map-stub-btn" type="button" disabled>📍 Select my destination on the map</button>
+          <div class="map-stub-note">🚧 Map picker isn't connected yet — this is a placeholder for now.</div>
+        </div>
+        <div class="mind-change"><button class="btn btn--text" data-swap-path="manual">I changed my mind, I wanna manually enter my stops</button></div>
+      ` : ''}
+
+      ${d.pathMethod === 'manual' ? `
+        <div style="margin-top:12px; display:flex; flex-direction:column; gap:12px;">
+          <div class="field">
+            <label>Boarding stop</label>
+            ${renderDropdown({
+              name:'boarding', mode:'single', placeholder:'Select boarding stop',
+              options: commonStops.filter(s => s.stop_id !== d.dropoffStopId).map(s => ({id:s.stop_id, label:s.name})),
+              selectedIds: d.boardingStopId != null ? [d.boardingStopId] : [],
+            })}
+          </div>
+          <div class="field">
+            <label>Drop-off stop</label>
+            ${renderDropdown({
+              name:'dropoff', mode:'single', placeholder:'Select drop-off stop',
+              options: commonStops.filter(s => s.stop_id !== d.boardingStopId).map(s => ({id:s.stop_id, label:s.name})),
+              selectedIds: d.dropoffStopId != null ? [d.dropoffStopId] : [],
+            })}
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Walk: home → boarding stop</label>
+              <input type="number" min="0" step="1" id="walk-to-boarding" placeholder="e.g. 6" value="${d.walkToBoardingMin}">
+              <span class="walk-unit">minutes</span>
+            </div>
+            <div class="field">
+              <label>Walk: drop-off → destination</label>
+              <input type="number" min="0" step="1" id="walk-from-dropoff" placeholder="e.g. 4" value="${d.walkFromDropoffMin}">
+              <span class="walk-unit">minutes</span>
+            </div>
+          </div>
+        </div>
+        <div class="mind-change"><button class="btn btn--text" data-swap-path="map">I changed my mind, I wanna select on the map</button></div>
+      ` : ''}
+    </div>
+
+    <div class="f-section ${timeLocked ? 'locked':''}">
+      <span class="f-label">When</span>
+      <div class="segmented">
+        <button class="segmented-btn ${d.repeatType==='daily'?'selected':''}" data-repeat="daily">Daily</button>
+        <button class="segmented-btn ${d.repeatType==='weekly'?'selected':''}" data-repeat="weekly">Weekly</button>
+        <button class="segmented-btn ${d.repeatType==='none'?'selected':''}" data-repeat="none">Doesn't repeat</button>
+      </div>
+
+      ${d.repeatType === 'daily' ? `
+        <div class="field" style="margin-top:12px;">
+          <label>Arrive by</label>
+          <input type="time" id="time-daily" value="${d.arrivalTime}">
+        </div>` : ''}
+
+      ${d.repeatType === 'weekly' ? `
+        <div style="margin-top:12px; display:flex; flex-direction:column; gap:12px;">
+          <div class="field">
+            <label>Day(s)</label>
+            ${renderDropdown({
+              name:'day', mode:'multi', placeholder:'Select day(s)',
+              options: DAYS.map(day => ({id:day, label:day})),
+              selectedIds: d.weeklyDays,
+            })}
+          </div>
+          <div class="field">
+            <label>Arrive by</label>
+            <input type="time" id="time-weekly" value="${d.arrivalTime}">
+          </div>
+        </div>` : ''}
+
+      ${d.repeatType === 'none' ? `
+        <div class="field-row" style="margin-top:12px;">
+          <div class="field">
+            <label>Date</label>
+            <input type="date" id="date-once" value="${d.oneTimeDate}">
+          </div>
+          <div class="field">
+            <label>Arrive by</label>
+            <input type="time" id="time-once" value="${d.arrivalTime}">
+          </div>
+        </div>` : ''}
+    </div>
+  `;
+
+  wireLeafInputs();
+  wireDropdownInteractions();
+  wireStructuralButtons();
+  syncDropdownPortal();
+}
+
+/* ---- reusable dropdown markup (trigger only — the option list lives in the #dd-portal) ---- */
+function renderDropdown({name, mode, placeholder, options, selectedIds}){
+  const isOpen = wizardUI.openDropdown === name;
+  const selectedOptions = options.filter(o => selectedIds.includes(o.id));
+
+  let triggerInner = '';
+  if (mode === 'multi'){
+    triggerInner = selectedOptions.map(o => `
+      <span class="chip" data-chip="${name}" data-value="${o.id}">
+        ${o.color ? `<span class="chip-dot" style="background:${o.color}"></span>` : ''}
+        ${o.label}
+        <span class="chip-x" data-chip-remove="${name}" data-value="${o.id}">${ICON.x}</span>
+      </span>`).join('');
+    triggerInner += `<input type="text" data-dd-search="${name}" placeholder="${selectedOptions.length ? '' : placeholder}" autocomplete="off">`;
+  } else {
+    const label = selectedOptions[0] ? selectedOptions[0].label : '';
+    triggerInner = `<input type="text" data-dd-search="${name}" placeholder="${placeholder}" value="${isOpen ? '' : label}" autocomplete="off" ${isOpen ? '' : 'readonly'}>`;
+  }
+
+  return `
+    <div class="dd ${isOpen ? 'open':''}" data-dd-root="${name}">
+      <div class="dd-input-wrap" data-dd-trigger="${name}">
+        ${triggerInner}
+        <span class="dd-chevron">${ICON.chevron}</span>
+      </div>
+    </div>`;
+}
+
+function buildOptionListHtml(name, options, selectedIds){
+  return options.length ? options.map(o => `
+    <div class="dd-option ${selectedIds.includes(o.id)?'selected':''}" data-dd-option="${name}" data-value="${o.id}">
+      ${o.color ? `<span class="dd-option-dot" style="background:${o.color}"></span>` : ''}
+      <span>${o.label}</span>
+      <span class="dd-check">${ICON.check}</span>
+    </div>`).join('') : `<div class="dd-empty">No options available</div>`;
+}
+
+/* positions the portal against its trigger's live bounding box, flipping above the trigger
+   and capping its height when there isn't enough room below — this is what actually fixes
+   lists opened near the bottom of the (scrollable) modal from clipping unreachable content */
+function positionDropdownPortal(name){
+  const trigger = document.querySelector(`[data-dd-trigger="${name}"]`);
+  const portal = document.getElementById('dd-portal');
+  if (!trigger || !portal) return;
+  const rect = trigger.getBoundingClientRect();
+  const vh = window.innerHeight;
+  const gap = 6, edge = 10, minUsable = 120, cap = 260;
+  const spaceBelow = vh - rect.bottom - gap - edge;
+  const spaceAbove = rect.top - gap - edge;
+
+  portal.style.left = rect.left + 'px';
+  portal.style.width = rect.width + 'px';
+
+  if (spaceBelow >= minUsable || spaceBelow >= spaceAbove){
+    portal.style.top = (rect.bottom + gap) + 'px';
+    portal.style.bottom = 'auto';
+    portal.style.maxHeight = Math.max(minUsable, Math.min(cap, spaceBelow)) + 'px';
+  } else {
+    portal.style.bottom = (vh - rect.top + gap) + 'px';
+    portal.style.top = 'auto';
+    portal.style.maxHeight = Math.max(minUsable, Math.min(cap, spaceAbove)) + 'px';
+  }
+}
+
+function wirePortalOptionClicks(){
+  document.getElementById('dd-portal').querySelectorAll('[data-dd-option]').forEach(opt => {
+    opt.addEventListener('click', () => handleOptionSelect(opt.dataset.ddOption, opt.dataset.value));
+  });
+}
+
+/* renders (or clears) the portal to match wizardUI.openDropdown — called at the end of every
+   renderWizardBody() so the portal always reflects current state */
+function syncDropdownPortal(){
+  const portal = document.getElementById('dd-portal');
+  const name = wizardUI.openDropdown;
+  if (!name){
+    portal.hidden = true;
+    portal.innerHTML = '';
+    return;
+  }
+  const w = state.wizard, d = w.data;
+  const options = getOptionsForDropdown(name, d);
+  const selectedIds = getSelectedIdsForDropdown(name, d);
+  portal.innerHTML = buildOptionListHtml(name, options, selectedIds);
+  portal.hidden = false;
+  positionDropdownPortal(name);
+  wirePortalOptionClicks();
+}
+
+/* ---- wiring: leaf inputs that DON'T need a structural re-render ---- */
+function wireLeafInputs(){
+  const w = state.wizard;
+  const d = w.data;
+  const bind = (id, field, isNumber) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('input', () => {
+      d[field] = isNumber ? el.value : el.value;
+      markDirtyAndAutosave();
+    });
+  };
+  bind('walk-to-boarding', 'walkToBoardingMin', true);
+  bind('walk-from-dropoff', 'walkFromDropoffMin', true);
+  bind('time-daily', 'arrivalTime');
+  bind('time-weekly', 'arrivalTime');
+  bind('date-once', 'oneTimeDate');
+  bind('time-once', 'arrivalTime');
+}
+
+/* ---- wiring: dropdown open/close + search (targeted, focus-preserving) + option select ---- */
+function wireDropdownInteractions(){
+  const body = document.getElementById('wizard-body');
+
+  body.querySelectorAll('[data-dd-trigger]').forEach(trigger => {
+    trigger.addEventListener('mousedown', (e) => {
+      const name = trigger.dataset.ddTrigger;
+      if (e.target.closest('[data-chip-remove]')) return; // let the chip-x handler deal with it
+      e.stopPropagation(); // keep this mutation isolated from the outer "click outside" listener
+      if (wizardUI.openDropdown === name) return; // already open — let the click just focus/position the cursor
+      e.preventDefault();
+      wizardUI.openDropdown = name;
+      renderWizardBody();
+      const input = document.querySelector(`[data-dd-search="${name}"]`);
+      if (input) input.focus();
+    });
+  });
+
+  body.querySelectorAll('[data-dd-search]').forEach(input => {
+    input.addEventListener('input', () => {
+      const name = input.dataset.ddSearch;
+      refreshDropdownList(name, input.value);
+    });
+  });
+
+  body.querySelectorAll('[data-chip-remove]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const name = btn.dataset.chipRemove;
+      if (name === 'routes') handleRouteRemove(btn.dataset.value);
+      else if (name === 'day') handleDayRemove(btn.dataset.value);
+    });
+  });
+}
+
+function refreshDropdownList(name, query){
+  const w = state.wizard, d = w.data;
+  let options = getOptionsForDropdown(name, d);
+  const q = query.trim().toLowerCase();
+  if (q) options = options.filter(o => o.label.toLowerCase().includes(q));
+  const selectedIds = getSelectedIdsForDropdown(name, d);
+
+  const portal = document.getElementById('dd-portal');
+  portal.innerHTML = options.length ? buildOptionListHtml(name, options, selectedIds) : `<div class="dd-empty">No matches</div>`;
+  wirePortalOptionClicks();
+}
+
+function getOptionsForDropdown(name, d){
+  if (name === 'system') return mockGetSystems().map(s => ({id:s.system_id, label:s.name}));
+  if (name === 'routes') return mockGetRoutes(d.systemId).map(r => ({id:r.route_graph_id, label:r.route_name, color:r.color}));
+  if (name === 'day') return DAYS.map(day => ({id:day, label:day}));
+  if (name === 'boarding') return intersectStopsAcrossRoutes(d.routeIds).filter(s => s.stop_id !== d.dropoffStopId).map(s => ({id:s.stop_id, label:s.name}));
+  if (name === 'dropoff') return intersectStopsAcrossRoutes(d.routeIds).filter(s => s.stop_id !== d.boardingStopId).map(s => ({id:s.stop_id, label:s.name}));
+  return [];
+}
+function getSelectedIdsForDropdown(name, d){
+  if (name === 'system') return d.systemId != null ? [d.systemId] : [];
+  if (name === 'routes') return d.routeIds;
+  if (name === 'day') return d.weeklyDays;
+  if (name === 'boarding') return d.boardingStopId != null ? [d.boardingStopId] : [];
+  if (name === 'dropoff') return d.dropoffStopId != null ? [d.dropoffStopId] : [];
+  return [];
+}
+
+/* ---- option select handlers (structural: full body re-render) ---- */
+function handleOptionSelect(ddName, rawValue){
+  const w = state.wizard, d = w.data;
+
+  if (ddName === 'system'){
+    const value = Number(rawValue);
+    if (d.systemId === value) { wizardUI.openDropdown = null; renderWizardBody(); return; }
+    const sys = mockGetSystems().find(s => s.system_id === value);
+    d.systemId = sys.system_id; d.systemName = sys.name;
+    resetRoutesAndPath(d);
+    wizardUI.openDropdown = null;
+    markDirtyAndAutosave();
+    renderWizardBody();
+    return;
+  }
+
+  if (ddName === 'routes'){
+    const value = Number(rawValue);
+    if (d.routeIds.includes(value)) { handleRouteRemove(rawValue); return; } // clicking a selected option again deselects it
+    const candidate = [...d.routeIds, value];
+    if (candidate.length >= 2){
+      const common = intersectStopsAcrossRoutes(candidate);
+      if (common.length < 2){
+        showWizardError("Please select routes with at least 2 stops in common.");
+        return;
+      }
+    }
+    d.routeIds = candidate;
+    resetPathSelection(d);
+    wizardUI.openDropdown = null; // closes after each pick — reopen it to add another route
+    markDirtyAndAutosave();
+    renderWizardBody();
+    return;
+  }
+
+  if (ddName === 'boarding'){
+    d.boardingStopId = rawValue;
+    d.boardingStopName = (intersectStopsAcrossRoutes(d.routeIds).find(s => s.stop_id === rawValue) || {}).name || rawValue;
+    wizardUI.openDropdown = null;
+    markDirtyAndAutosave();
+    renderWizardBody();
+    return;
+  }
+
+  if (ddName === 'dropoff'){
+    d.dropoffStopId = rawValue;
+    d.dropoffStopName = (intersectStopsAcrossRoutes(d.routeIds).find(s => s.stop_id === rawValue) || {}).name || rawValue;
+    wizardUI.openDropdown = null;
+    markDirtyAndAutosave();
+    renderWizardBody();
+    return;
+  }
+
+  if (ddName === 'day'){
+    if (d.weeklyDays.includes(rawValue)) { handleDayRemove(rawValue); return; } // toggle off if re-clicked
+    d.weeklyDays = sortDays([...d.weeklyDays, rawValue]);
+    wizardUI.openDropdown = null; // same closes-after-pick behavior as routes
+    markDirtyAndAutosave();
+    renderWizardBody();
+    return;
+  }
+}
+
+function handleRouteRemove(rawValue){
+  const w = state.wizard, d = w.data;
+  const value = Number(rawValue);
+  d.routeIds = d.routeIds.filter(id => id !== value);
+  resetPathSelection(d);
+  markDirtyAndAutosave();
+  renderWizardBody();
+}
+
+function handleDayRemove(day){
+  const w = state.wizard, d = w.data;
+  d.weeklyDays = d.weeklyDays.filter(x => x !== day);
+  markDirtyAndAutosave();
+  renderWizardBody();
+}
+
+/* ---- structural buttons: path-method cards, swap links, repeat segmented ---- */
+function wireStructuralButtons(){
+  const body = document.getElementById('wizard-body');
+  const w = state.wizard, d = w.data;
+
+  body.querySelectorAll('[data-path-option]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      d.pathMethod = btn.dataset.pathOption;
+      markDirtyAndAutosave();
+      renderWizardBody();
+    });
+  });
+  body.querySelectorAll('[data-swap-path]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      resetPathSelection(d);
+      d.pathMethod = btn.dataset.swapPath;
+      markDirtyAndAutosave();
+      renderWizardBody();
+    });
+  });
+  body.querySelectorAll('[data-repeat]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      d.repeatType = btn.dataset.repeat;
+      markDirtyAndAutosave();
+      renderWizardBody();
+    });
+  });
+}
+
+// close any open dropdown when clicking outside both its trigger and its (now-portaled) list
+document.addEventListener('mousedown', (e) => {
+  if (!state.wizard || !wizardUI.openDropdown) return;
+  if (e.target.closest('.dd') || e.target.closest('#dd-portal')) return;
+  wizardUI.openDropdown = null;
+  renderWizardBody();
+});
+
+// the portal is fixed-positioned against a live bounding rect computed at open time — if the
+// modal scrolls or the viewport resizes, that rect goes stale, so just close rather than let
+// the list drift away from its trigger
+document.getElementById('wizard-body').addEventListener('scroll', () => {
+  if (wizardUI.openDropdown){ wizardUI.openDropdown = null; renderWizardBody(); }
+});
+window.addEventListener('resize', () => {
+  if (state.wizard && wizardUI.openDropdown){ wizardUI.openDropdown = null; renderWizardBody(); }
+});
+
+/* ============================================================
+   GLOBAL NAV + THEME WIRING
+   ============================================================ */
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  state.theme = state.theme === 'light' ? 'dark' : 'light';
+  applyTheme();
+});
+document.getElementById('fab').addEventListener('click', () => openWizard('draft', null));
+[['side-schedules','schedules'],['side-profile','profile'],['bottom-schedules','schedules'],['bottom-profile','profile']]
+  .forEach(([id, view]) => document.getElementById(id).addEventListener('click', () => setView(view)));
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!document.getElementById('discard-prompt').hidden){
+    document.getElementById('discard-prompt').hidden = true;
+    return;
+  }
+  if (!document.getElementById('delete-confirm').hidden){
+    document.getElementById('delete-confirm').hidden = true;
+    state.deleteTargetId = null;
+    return;
+  }
+  if (!document.getElementById('wizard-overlay').hidden){
+    requestCloseWizard();
+    return;
+  }
+  if (!document.getElementById('drafts-overlay').hidden){
+    closeDraftsPanel();
+  }
+});
+
+/* ============================================================
+   INIT
+   ============================================================ */
+applyTheme();
+renderSchedulesView();
+
+})();
+</script>
+</body>
+</html>
