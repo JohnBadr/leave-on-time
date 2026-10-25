@@ -60,7 +60,7 @@ from eta import _compute_vehicle_eta
 
 # ── CONFIG ─────────────────────────────────────────────────────────────────────
 
-FORCE_USF_LOCKED = True   # True = every session is a USF route; False = random system each time
+FORCE_USF_LOCKED = False   # True = every session is a USF route; False = random system each time
 USF_SYSTEM_ID    = 2343
 TARGET_POOL_SIZE = 4         # 4 concurrent sessions, per plan
 
