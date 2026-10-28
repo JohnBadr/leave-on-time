@@ -5,6 +5,9 @@ temp.py
 
 # Databases
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 
 # Notes & scratch files
 problems-solved-log.txt
@@ -13,6 +16,7 @@ bus_track_logic.txt
 
 #MD
 plan.md
+server.md
 
 # Misc
 other-stuff/

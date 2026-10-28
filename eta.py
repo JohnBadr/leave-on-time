@@ -1,248 +1,272 @@
-from utils import get_distance_m, compute_bearing, angle_diff, project_onto_shape
-import sqlite3
-import time
-import json
+"""USF history + live fleet corrections. All forecasts accept a replay clock."""
+
 import math
-from passiogo_fix import passiogo
-from geopy.distance import geodesic
-from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
+import time
+from bisect import bisect_left, bisect_right
+from collections import OrderedDict
+
 from bus_track import segment_observations, stop_dwell_observations
+from observation_store import MODEL_VERSION
+from service_calendar import get_period_type, local_datetime
+from tracking_core import MAX_FIX_GAP_S, STALE_AFTER_S, out_of_service
+
+DEFAULT_STOP_DWELL_S = 10.0
+RATIO_HALF_LIFE_S = 900
+RATIO_MAX_AGE_S = 10800
+RATIO_SHRINKAGE_K = 5
+HISTORY_MAX_AGE_S = 56 * 86400
+_calibration_provider = None
+_pair_cache = OrderedDict()
+_bin_cache = OrderedDict()
 
 
-DEFAULT_STOP_DWELL_S = 3.0
-
-RATIO_HALF_LIFE_S  = 900    # ADDED — weight halves every 15 min; recent observations dominate, old ones fade smoothly instead of a hard cutoff
-RATIO_MAX_AGE_S     = 10800  # ADDED — hard ceiling: anything older than 3h is excluded entirely, even at near-zero decayed weight
-RATIO_SHRINKAGE_K   = 5      # ADDED — shrinkage constant: with n own-observations, segment trusts itself at weight n/(n+K) and leans on the route-wide ratio for the rest
+def clear_caches():
+    _pair_cache.clear()
+    _bin_cache.clear()
 
 
-def _get_fallback_ratio():
-    hour = datetime.now().hour
+def _cached(cache, key, build):
+    if key not in cache:
+        cache[key] = build()
+        if len(cache) > 512:
+            cache.popitem(last=False)
+    cache.move_to_end(key)
+    return cache[key]
+
+
+def _sample_token(key, samples):
+    return key, id(samples), len(samples), tuple(samples[-1]) if samples else ()
+
+
+def _recent(pairs, now):
+    # Cached pairs are sorted, so weeks of old history are not scanned per tick.
+    start = bisect_left(pairs, (now - RATIO_MAX_AGE_S, float('-inf')))
+    end = bisect_right(pairs, (now, float('inf')))
+    return pairs[start:end]
+
+
+def set_calibration_provider(provider):
+    global _calibration_provider
+    _calibration_provider = provider
+
+
+def _get_fallback_ratio(at=None):
+    hour = local_datetime(at).hour
     if 7 <= hour < 9:
         return 1.3
-    elif 15 <= hour < 18:
+    if 15 <= hour < 18:
         return 1.25
-    elif 9 <= hour < 15:
+    if 9 <= hour < 15:
         return 1.15
-    elif 18 <= hour < 22:
+    if 18 <= hour < 22:
         return 1.1
-    elif 5 <= hour < 7:
-        return 1.05
-    else:
-        return 1.0
-
-def _get_stop_dwell_s(system_id, route_name, stop_id):
-    key = (system_id, route_name, stop_id)
-    observations = stop_dwell_observations.get(key, [])
-    pairs = [(t, d) for (t, d) in observations]  # ADDED — already (timestamp, value) shaped, just naming it for 
-    # clarity going into the shared helper
-    
-    weighted = _weighted_average(pairs, time.time())  # CHANGED — was flat <3600s-then-<10800s window average
-    return weighted if weighted is not None else DEFAULT_STOP_DWELL_S  # CHANGED — was `sum(window)/len(window) 
-    # if window else DEFAULT_STOP_DWELL_S`
-
-def _weighted_average(ts_value_pairs, now, half_life_s=RATIO_HALF_LIFE_S, max_age_s=RATIO_MAX_AGE_S):  # ADDED
-    # Generic exponential-decay weighted average over (timestamp, value) pairs.
-    # Shared by segment-ratio weighting and route-wide weighting below so both
-    # use identical decay math.
-    weight_sum = 0.0
-    weighted_total = 0.0
-    for t, v in ts_value_pairs:
-        age_s = now - t
-        if age_s >= max_age_s:
-            continue
-        w = 0.5 ** (age_s / half_life_s)
-        weight_sum += w
-        weighted_total += w * v
-    return weighted_total / weight_sum if weight_sum > 0 else None
-
-def _segment_ratio_weighted(observations, now):  # ADDED
-    pairs = [(t, r) for (t, _, _, r) in observations]
-    return _weighted_average(pairs, now)
-
-def _route_wide_ratio(system_id, route_name, now):  # ADDED
-    # Aggregates every segment's observations on this route into one weighted
-    # ratio — the "prior" that sparse segments blend toward. Computed once per
-    # _compute_vehicle_eta call (not once per segment) to avoid rescanning the
-    # whole dict repeatedly in the downstream-segment loop.
-    pairs = []
-    for (sid, rname, seg_idx), obs in segment_observations.items():
-        if sid == system_id and rname == route_name:
-            pairs.extend((t, r) for (t, _, _, r) in obs)
-    return _weighted_average(pairs, now)
-
-def _blended_segment_ratio(system_id, route_name, segment_index, route_ratio, now):  # ADDED
-    key = (system_id, route_name, segment_index)
-    observations = segment_observations.get(key, [])
-    own_ratio = _segment_ratio_weighted(observations, now)
-    n = sum(1 for (t, _, _, _) in observations if now - t < RATIO_MAX_AGE_S)
-
-    if own_ratio is None and route_ratio is None:
-        return _get_fallback_ratio()
-    if own_ratio is None:
-        return route_ratio
-    if route_ratio is None:
-        return own_ratio
-
-    own_weight = n / (n + RATIO_SHRINKAGE_K)
-    return own_weight * own_ratio + (1 - own_weight) * route_ratio
+    return 1.05 if 5 <= hour < 7 else 1.0
 
 
-def _compute_vehicle_eta(system_id, state, stop_sequence, dest_idx):
+def _summary(pairs):
+    total = sum(weight for weight, value in pairs)
+    if not total:
+        return None, 0.0
+    mean = sum(weight * value for weight, value in pairs) / total
+    effective_n = total * total / sum(weight * weight for weight, value in pairs)
+    return mean, effective_n
 
-    if not state['coords1']:
+
+def _weighted_average(pairs, now, half_life_s=RATIO_HALF_LIFE_S, max_age_s=RATIO_MAX_AGE_S):
+    return _summary([(0.5 ** ((now - at) / half_life_s), value)
+                     for at, value in pairs if 0 <= now - at < max_age_s])[0]
+
+
+def _historical_summary(pairs, now, traversal_at, cache_key=None):
+    target = local_datetime(traversal_at)
+    period = get_period_type(traversal_at)
+    target_minute = target.hour * 60 + target.minute
+    def bins():
+        groups = {}
+        for at, value in pairs:
+            age = now - at
+            if not 0 <= age < HISTORY_MAX_AGE_S or not math.isfinite(value) or value < 0:
+                continue
+            local = local_datetime(at)
+            key = local.weekday(), (local.hour * 60 + local.minute) // 30, get_period_type(at)
+            weight = .5 ** (age / (14 * 86400))
+            sums = groups.setdefault(key, [0., 0., 0.])
+            sums[0] += weight
+            sums[1] += weight * value
+            sums[2] += weight * weight
+        return groups
+    # Rebuild on new samples or once a minute. This is a pooled, half-hour
+    # baseline; replay never caches samples not yet available at issue time.
+    groups = bins() if cache_key is None else _cached(_bin_cache, (cache_key, int(now // 60)), bins)
+    weight_sum = weighted_total = squared_sum = 0.
+    for (weekday, slot, historical_period), (weights, values, squared) in groups.items():
+        minute_delta = abs(slot * 30 + 15 - target_minute)
+        minute_delta = min(minute_delta, 1440 - minute_delta)
+        day_weight = 1.0 if weekday == target.weekday() else (
+            .35 if (weekday < 5) == (target.weekday() < 5) else .1)
+        period_weight = 1.0 if historical_period == period else .25
+        # Nearby time-of-day samples dominate; sparse bins pool smoothly.
+        time_weight = .05 + .95 * math.exp(-.5 * (minute_delta / 90) ** 2)
+        context_weight = day_weight * period_weight * time_weight
+        weight_sum += context_weight * weights
+        weighted_total += context_weight * values
+        squared_sum += context_weight * context_weight * squared
+    return (weighted_total / weight_sum, weight_sum * weight_sum / squared_sum) if weight_sum else (None, 0.)
+
+
+def _route_pairs(system_id, route_name, version):
+    selected = [(key, samples) for key, samples in segment_observations.items()
+                if (key[0], key[1], str(key[2])) == (system_id, route_name, str(version))]
+    token = 'route', tuple(_sample_token(key, samples) for key, samples in selected)
+    pairs = _cached(_pair_cache, token,
+        lambda: sorted((at, ratio) for key, samples in selected for at, duration, baseline, ratio in samples))
+    return pairs, token
+
+
+def _segment_ratio(system_id, route_name, version, index, now, traversal_at):
+    key = system_id, route_name, str(version), index
+    samples = segment_observations.get(key, [])
+    own_token = _sample_token(key, samples)
+    own = _cached(_pair_cache, own_token,
+                  lambda: sorted((at, ratio) for at, duration, baseline, ratio in samples))
+    route, route_token = _route_pairs(system_id, route_name, version)
+    route_history, _ = _historical_summary(route, now, traversal_at, route_token)
+    own_history, historical_n = _historical_summary(own, now, traversal_at, own_token)
+    prior = route_history if route_history is not None else _get_fallback_ratio(traversal_at)
+    if own_history is not None:
+        weight = historical_n / (historical_n + RATIO_SHRINKAGE_K)
+        prior = weight * own_history + (1 - weight) * prior
+    own_recent = [(0.5 ** ((now - at) / RATIO_HALF_LIFE_S), ratio)
+                  for at, ratio in _recent(own, now)]
+    recent, recent_n = _summary(own_recent)
+    if recent is None:
+        route_recent = _weighted_average(_recent(route, now), now)
+        route_base = route_history
+        if route_recent is not None and route_base:
+            recent, recent_n = prior * route_recent / route_base, 1.0
+    if recent is not None:
+        horizon = max(0.0, traversal_at - now)
+        live_weight = recent_n / (recent_n + RATIO_SHRINKAGE_K) * math.exp(-horizon / 900)
+        prior = live_weight * recent + (1 - live_weight) * prior
+    return max(0.01, prior), historical_n
+
+
+def _stop_duration(system_id, route_name, version, index, now, traversal_at, elapsed=0):
+    key = system_id, route_name, str(version), index
+    samples = stop_dwell_observations.get(key, [])
+    token = _sample_token(key, samples)
+    pairs = _cached(_pair_cache, token, lambda: sorted(samples))
+    # Survival conditioning: a bus held for 5 minutes needs a remaining-time
+    # estimate from holds that actually lasted longer, not mean minus 5 minutes.
+    remaining = pairs if elapsed == 0 else [(at, duration - elapsed) for at, duration in pairs if duration >= elapsed]
+    historic, n = _historical_summary(remaining, now, traversal_at, token if elapsed == 0 else None)
+    recent_remaining = [(at, duration - elapsed) for at, duration in _recent(pairs, now) if duration >= elapsed]
+    recent = _weighted_average(recent_remaining, now)
+    if historic is None:
+        return DEFAULT_STOP_DWELL_S, 0
+    weight = math.exp(-max(0, traversal_at - now) / 900) * n / (n + 5)
+    return max(0.0, (1 - weight) * historic + weight * (recent if recent is not None else historic)), n
+
+
+def _compute_vehicle_eta(system_id, state, stop_sequence, dest_idx, now=None):
+    now = time.time() if now is None else now
+    if (not stop_sequence or state.get('status') != 'DETERMINED' or not state.get('coords1')
+            or state.get('index') is None or not 0 <= dest_idx < len(stop_sequence)):
         return None
-
-    now = time.time()  # ADDED — single timestamp reused for route-wide + every per-segment weighting call this invocation, keeps all of them consistent with each other
-
-    lat, lon = state['coords1']
-    idx = state['index']
-
-    route_ratio = _route_wide_ratio(system_id, state['route_name'], now)  # ADDED — computed once, reused below instead of rescanning per segment
-
-    # ── ACTIVE SEGMENT ──
-    current_pair = stop_sequence[idx]
-    shape_points = json.loads(current_pair[5])
-    _, progress_pct, _ = project_onto_shape(lat, lon, shape_points)
-
-    remaining_distance_m  = (1.0 - progress_pct) * current_pair[6]
-    remaining_osrm_time_s = (1.0 - progress_pct) * current_pair[7]
-
-    ratio = _blended_segment_ratio(system_id, state['route_name'], idx, route_ratio, now)  # CHANGED — was flat-window average, now recency-weighted + route-blended
-
-    distance_to_dest_m  = remaining_distance_m
-    time_to_dest_s      = remaining_osrm_time_s * ratio
-
-    if idx != dest_idx:
-        time_to_dest_s += _get_stop_dwell_s(system_id, state['route_name'], current_pair[2])
-
-    # ── DOWNSTREAM SEGMENTS ──
-    highest_idx = len(stop_sequence)
-    loops_checked = 0
-    while idx != dest_idx and loops_checked < highest_idx:
-        idx = (idx + 1) % highest_idx
-        loops_checked += 1
-
-        current_pair = stop_sequence[idx]
-
-        ratio = _blended_segment_ratio(system_id, state['route_name'], idx, route_ratio, now)  # CHANGED — same as above
-
-        distance_to_dest_m += current_pair[6]
-        time_to_dest_s     += current_pair[7] * ratio
-
-        if idx != dest_idx:
-            time_to_dest_s += _get_stop_dwell_s(system_id, state['route_name'], current_pair[2])
-
-    if loops_checked == highest_idx:
-        return None  # dest_idx never found, bus may have left route
-
+    vehicle = state.get('vehicle_obj')
+    if vehicle is not None and out_of_service(vehicle):
+        return None
+    observed_at = state.get('last_fix_time')
+    if observed_at is None or not 0 <= now - observed_at <= MAX_FIX_GAP_S:
+        return None
+    if state.get('data_status') in ('gps_jump', 'invalid_coordinates', 'stale', 'out_of_service'):
+        return None
+    version = str(getattr(stop_sequence, 'version', state.get('route_version', 'legacy')))
+    if state.get('route_version') != version:
+        return None
+    index = state['index']
+    progress = max(0.0, min(1.0, state.get('progress_pct', 0.0)))
+    remaining_distance = (1 - progress) * stop_sequence[index][6]
+    ratio, n = _segment_ratio(system_id, state['route_name'], version, index, now, now)
+    travel = (1 - progress) * stop_sequence[index][7] * ratio
+    sample_counts = [n]
+    arrival = state.get('stop_arrival_time')
+    if arrival is not None:
+        travel = remaining_distance = 0.0
+    elif state.get('moving') is False and state.get('segment_entry_time') is not None:
+        elapsed = now - state['segment_entry_time']
+        durations = [(at, duration - elapsed) for at, duration, baseline, r in
+                     segment_observations.get((system_id, state['route_name'], version, index), [])
+                     if duration > elapsed]
+        residual, _ = _historical_summary(durations, now, now)
+        if residual is not None:
+            travel = max(travel, residual)
+    if state.get('moving'):
+        travel = max(0.0, travel - (now - observed_at))
+    if index != dest_idx:
+        elapsed_stop = max(0.0, now - arrival) if arrival is not None else 0.0
+        dwell, count = _stop_duration(system_id, state['route_name'], version, index,
+                                      now, now + travel, elapsed_stop)
+        sample_counts.append(count)
+        travel += dwell
+    for _ in range(len(stop_sequence)):
+        if index == dest_idx:
+            break
+        index = (index + 1) % len(stop_sequence)
+        pair = stop_sequence[index]
+        ratio, n = _segment_ratio(system_id, state['route_name'], version, index, now, now + travel)
+        sample_counts.append(n)
+        travel += pair[7] * ratio
+        remaining_distance += pair[6]
+        if index != dest_idx:
+            dwell, count = _stop_duration(system_id, state['route_name'], version, index, now, now + travel)
+            sample_counts.append(count)
+            travel += dwell
+    offsets = _calibration_provider(system_id, state['route_name'], version, travel, now) if _calibration_provider else None
+    age = now - observed_at
+    uncertain = (age > STALE_AFTER_S or state.get('source_time') is None
+                 or min(sample_counts, default=0) < 3 or state.get('stop_logging', False))
     return {
-        'eta_timestamp':    now + time_to_dest_s,  # CHANGED — reuses `now` from top of function instead of a fresh time.time() call; negligible difference, just consistent
-        'time_to_dest_s':   time_to_dest_s,
-        'distance_to_dest_m': distance_to_dest_m,
+        'eta_timestamp': now + travel, 'time_to_dest_s': travel,
+        'distance_to_dest_m': remaining_distance, 'prediction_timestamp': now,
+        'data_age_s': age, 'status': 'uncertain' if uncertain else 'live',
+        'route_version': version, 'model_version': MODEL_VERSION,
+        'system_id': system_id, 'route_name': state['route_name'],
+        'arrival_lower_ts': max(now, now + travel + offsets[0]) if offsets else None,
+        'arrival_upper_ts': max(now, now + travel + offsets[1]) if offsets else None,
+        'interval_calibrated': offsets is not None,
     }
 
 
-# ── LIVE ETA SMOOTHING ──────────────────────────────────────────────────────── (ADDED — whole section)
-# NOT used by shadow_tester.py. shadow_tester calls _compute_vehicle_eta
-# directly and must keep doing so — its whole purpose is measuring the raw
-# engine's accuracy, and smoothed values would make checkpoint error_s reflect
-# smoothing lag instead of true per-tick prediction error. This wrapper is for
-# the future live user-facing scheduler only.
+_eta_smoothing_state = {}
+ETA_SMOOTHING_ALPHA = .3
+ETA_SMOOTHING_SNAP_RATIO = .5
 
-_eta_smoothing_state = {
-#   (vehicle_id, dest_idx): {'smoothed_time_to_dest_s': float, 'last_updated': float}
-}
 
-ETA_SMOOTHING_ALPHA      = 0.3  # lower = smoother but slower to react to real change; higher = jumpier but more current
-ETA_SMOOTHING_SNAP_RATIO = 0.5  # if the raw value differs from the smoothed value by more than this fraction, snap instead of blend — avoids lagging behind a real correction (e.g. a vehicle just reacquired after cold-start)
-
-def get_smoothed_eta(vehicle_id, dest_idx, raw_result):
+def get_smoothed_eta(vehicle_id, dest_idx, raw_result, system_id=None, route_name=None):
     if raw_result is None:
         return None
-
-    key = (vehicle_id, dest_idx)
-    prev = _eta_smoothing_state.get(key)
-    raw_time = raw_result['time_to_dest_s']
-
-    if prev is None:
-        smoothed_time = raw_time
+    now = raw_result.get('prediction_timestamp', time.time())
+    key = (system_id if system_id is not None else raw_result.get('system_id'),
+           route_name if route_name is not None else raw_result.get('route_name'),
+           vehicle_id, raw_result.get('route_version'), dest_idx)
+    previous = _eta_smoothing_state.get(key)
+    raw = raw_result['time_to_dest_s']
+    previous_remaining = max(0, previous['arrival'] - now) if previous else raw
+    if previous is None or abs(raw - previous_remaining) > max(30, previous_remaining * ETA_SMOOTHING_SNAP_RATIO):
+        remaining = raw
     else:
-        prev_time = prev['smoothed_time_to_dest_s']
-        if prev_time > 0 and abs(raw_time - prev_time) / prev_time > ETA_SMOOTHING_SNAP_RATIO:
-            smoothed_time = raw_time  # large jump — snap rather than EMA-lag behind a real correction
-        else:
-            smoothed_time = ETA_SMOOTHING_ALPHA * raw_time + (1 - ETA_SMOOTHING_ALPHA) * prev_time
+        remaining = ETA_SMOOTHING_ALPHA * raw + (1 - ETA_SMOOTHING_ALPHA) * previous_remaining
+    _eta_smoothing_state[key] = {'arrival': now + remaining, 'last_updated': now}
+    result = dict(raw_result, eta_timestamp=now + remaining, time_to_dest_s=remaining)
+    # Calibration belongs to raw predictions; do not imply the smoothed display
+    # has independently calibrated bounds.
+    result.update(arrival_lower_ts=None, arrival_upper_ts=None, interval_calibrated=False)
+    return result
 
-    _eta_smoothing_state[key] = {
-        'smoothed_time_to_dest_s': smoothed_time,
-        'last_updated': time.time(),
-    }
 
-    return {
-        'eta_timestamp':      time.time() + smoothed_time,
-        'time_to_dest_s':     smoothed_time,
-        'distance_to_dest_m': raw_result['distance_to_dest_m'],  # not smoothed — this is a direct GPS-derived measurement each tick, not a derived prediction like time
-    }
-
-def cleanup_smoothing_state(max_age_s=1800):
-    # Call periodically from whatever becomes the real scheduler's maintenance
-    # pass, same pattern as bus_track.py's trim functions — drops entries for
-    # trips no longer being actively tracked so this dict doesn't grow forever.
-    now = time.time()
-    for key in list(_eta_smoothing_state.keys()):
-        if now - _eta_smoothing_state[key]['last_updated'] > max_age_s:
+def cleanup_smoothing_state(max_age_s=1800, now=None):
+    now = time.time() if now is None else now
+    for key, value in list(_eta_smoothing_state.items()):
+        if now - value['last_updated'] > max_age_s:
             del _eta_smoothing_state[key]
-        
-
-# ── ETA ENGINE LOGIC ───────────────────────────────────────────────────────────
-#
-# Called by the scheduler every 60s for each active user schedule.
-#
-# INPUTS:
-#   - target_arrival_time: the time the user needs to be at their destination
-#   - all active vehicles on the relevant route (from tracked_vehicles)
-#   - for each vehicle: state['index'], state['last_speeds'], state['coords1']
-#   - walk_home_to_stop: seconds (passed in as param for now)
-#   - walk_dest_stop_to_building: seconds (passed in as param for now)
-#
-# STEP 1 — COMPUTE CURRENT ETA FOR EACH BUS
-#   For each vehicle on the route:
-#     - Take remaining distance on current segment: (1 - progress_pct) * road_distance_m
-#     - Sum full road_distance_m for every segment from (index + 1) to destination stop index
-#     - If len(last_speeds) >= 100: use avg_speed from last_speeds buffer to compute travel time
-#     - If len(last_speeds) < 100: fall back to sum of road_duration_s from stop_pairs (OSRM estimate)
-#     - Add walk_home_to_stop + 90s stop arrival buffer + walk_dest_stop_to_building
-#     - Result: current_eta for this vehicle
-#
-# STEP 2 — COMPUTE 1-LOOP-FORWARD PROJECTION FOR EACH BUS
-#   For each vehicle:
-#     - Compute full loop distance: sum of all road_distance_m across entire route
-#     - Compute loop duration using same avg_speed / road_duration_s fallback logic
-#     - projected_eta = current_eta + loop_duration
-#
-# STEP 3 — CHECK TRIGGER CONDITION
-#   If ANY vehicle's projected_eta does NOT exceed target_arrival_time:
-#     - Not all buses have exceeded the due date in projection yet
-#     - Do nothing, return None, wait for next 60s cycle
-#
-# STEP 4 — ALL PROJECTIONS EXCEED TARGET, PICK A BUS
-#   All projected_etas now exceed target_arrival_time, so we can commit
-#   From the CURRENT loop ETAs (not projections):
-#     - Filter to vehicles where current_eta <= target_arrival_time (on time)
-#     - Pick the vehicle with the LATEST current_eta (closest to deadline without exceeding)
-#
-# STEP 5 — NO BUS GETS THERE ON TIME (fallback)
-#   If no vehicle's current_eta <= target_arrival_time:
-#     - Pick the vehicle with the smallest overshoot (closest to target_arrival_time)
-#     - Flag it as a late notification
-#     - Return it anyway so the scheduler can warn the user
-#
-# OUTPUT:
-#   - selected_vehicle_id
-#   - notify_at: timestamp = current_time - (total_journey_time - time_already_elapsed)
-#   - estimated_arrival: the current_eta of the selected bus
-#   - is_late: bool (True if no bus gets user there on time)
-#   - notify_at = time.time() + time_until_boarding_s - walk_to_stop_s - 90 (should be when the user gets notified after 
-#    the prefered bus for them gets picked.)

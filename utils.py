@@ -1,16 +1,32 @@
 import math
-from geopy.distance import geodesic
+from functools import lru_cache
 
 def get_distance_m(lat1, lon1, lat2, lon2):
-    return geodesic((lat1, lon1), (lat2, lon2)).meters
+    a, b = math.radians(lat1), math.radians(lat2)
+    dlat, dlon = b - a, math.radians(lon2 - lon1)
+    h = math.sin(dlat / 2) ** 2 + math.cos(a) * math.cos(b) * math.sin(dlon / 2) ** 2
+    return 6371000.0 * 2 * math.asin(min(1.0, math.sqrt(h)))
 
 def angle_diff(a, b):
     diff = abs(a - b) % 360
     return diff if diff <= 180 else 360 - diff
 
+@lru_cache(maxsize=4096)
+def _shape_lengths(points):
+    cumulative = [0.0]
+    for (lon1, lat1), (lon2, lat2) in zip(points, points[1:]):
+        cumulative.append(cumulative[-1] + get_distance_m(lat1, lon1, lat2, lon2))
+    return cumulative
+
+
 def project_onto_shape(lat, lon, shape_points):
+    shape_points = tuple(tuple(point) for point in shape_points)
+    lengths = _shape_lengths(shape_points)
     if len(shape_points) < 2:
-        return 0.0, 0.0, 0.0  # degenerate shape — no meaningful projection possible
+        error = get_distance_m(lat, lon, shape_points[0][1], shape_points[0][0]) if shape_points else float('inf')
+        return error, 0.0, 0.0
+    if lengths[-1] == 0:
+        return get_distance_m(lat, lon, shape_points[0][1], shape_points[0][0]), 0.0, 0.0
     
     best_error_m=float('inf')
     best_segment_idx=0
@@ -41,7 +57,7 @@ def project_onto_shape(lat, lon, shape_points):
             best_error_m = error_m
             best_segment_idx = i
             best_t = t
-    progress_pct = (best_segment_idx + best_t) / (len(shape_points) - 1)
+    progress_pct = (lengths[best_segment_idx] + best_t * (lengths[best_segment_idx + 1] - lengths[best_segment_idx])) / lengths[-1]
 
     lon_A, lat_A = shape_points[best_segment_idx]
     lon_B, lat_B = shape_points[best_segment_idx + 1]

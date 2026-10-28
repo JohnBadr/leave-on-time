@@ -1,0 +1,17 @@
+[Unit]
+Description=LeaveOnTime Bull Runner recorder
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=leaveontime
+WorkingDirectory=/opt/leave-on-time
+ExecStart=/opt/leave-on-time/venv/bin/python /opt/leave-on-time/logger.py --route-db /opt/leave-on-time/routegraph.db --db /opt/leave-on-time/bullrunner.db --system-id 2343
+Restart=always
+RestartSec=10
+TimeoutStopSec=45
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

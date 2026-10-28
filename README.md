@@ -4,6 +4,12 @@ A proactive, personalized transit notification system for PassioGo bus networks.
 
 ## What It Does
 
+The tracking and ETA implementation now includes per-route versions, timestamp-aware
+tracking, a durable recorder, historical/live travel-time estimates, and offline
+replay. Start with [ACCURACY.md](ACCURACY.md) for setup, verification, and the
+Raspberry Pi service example. Let any already-running old route updater finish
+before initializing the version columns. No USF route-source replacement is required.
+
 Most transit apps require you to actively check them. LeaveOnTime works in the background. You tell it "I need to be at ENB by 9am every Monday, Wednesday, and Friday" and it handles the rest — figuring out which bus to take, when to leave your door, and notifying you at exactly the right moment.
 
 **Core features:**
@@ -16,8 +22,8 @@ Most transit apps require you to actively check them. LeaveOnTime works in the b
 - Real-time bus tracking engine with shape-based segment projection
 
 **USF-specific:**
-- Delay prediction model trained on proprietary Bull Runner position data from Fall 2026+.
-- Separate ML models per academic period (regular, finals, first week, summer, break, holiday)
+- Historical segment and stop-time estimates combined with recent fleet observations.
+- Academic-period features (regular, finals, first week, summer, break, holiday), evaluated at USF local event time.
 
 ## Architecture
 
@@ -37,16 +43,19 @@ notifications               ML break prediction
   (personal desk device)
 ```
 
-A standalone shadow-testing process continuously validates ETA prediction accuracy against real bus arrivals across multiple PassioGo systems, fully isolated from the production Bull Runner tracker and its training data.
+A standalone shadow recorder uses an isolated database and can observe multiple
+PassioGo systems through repeated `--system-id` arguments. Its automatic arrival
+labels are provisional; manually checked arrivals and offline replay provide the
+audited accuracy scorecard. Legacy shadow-test tables are preserved.
 
 ## Tech Stack
 
-- **Backend:** Python, Flask, APScheduler
+- **Backend:** Python recorder and shared ETA engine; web integration remains in progress
 - **Database:** SQLite (dev), PostgreSQL (prod)
 - **Road network:** OSRM on OpenStreetMap data (free, no API key, hosted by myself on a google server for precomputing logic)
 - **Transit data:** PassioGo API (`passiogo-fix` fork)
 - **Notifications:** Web app (default), SendGrid (email)
-- **ML:** scikit-learn Random Forest, one classifier per academic period type
+- **Prediction:** Historical segment/stop baselines with live corrections; trained ML remains a future comparison
 - **Hardware:** ESP32 DOIT DevKit V1, OLED display, buzzer
 - **Hosting:** Railway
 
@@ -57,8 +66,9 @@ A standalone shadow-testing process continuously validates ETA prediction accura
 - [x] Route graph precomputation via OSRM (road-accurate stop-pair distances + shape points)
 - [x] Real-time vehicle tracking engine (shape projection, cold start resolution, index advancement)
 - [x] Unscheduled break detector (filters stop time from speed buffer)
-- [ ] High-frequency data logger — 5s polling, DETERMINED-only, running 24/7 on Raspberry Pi
-- [x] Shadow testing framework — isolated multi-system validation of ETA predictions against real arrivals
+- [x] High-frequency recorder — 5s polling, raw reports in every tracking state, immediate durable samples
+- [ ] Install the recorder as a 24/7 service on the Raspberry Pi/server
+- [x] Shadow recorder and deterministic replay — isolated multi-system cohorts, explicit failures, independent provisional labels, and manual auditing
 - [x] Per-vehicle ETA calculation (segment-ratio-corrected against OSRM baselines)
 - [ ] Multi-bus selection algorithm (project-forward, pick latest bus still on time)
 - [ ] Optimal stop selection
@@ -72,7 +82,13 @@ A standalone shadow-testing process continuously validates ETA prediction accura
 
 ## Data Collection
 
-A logging script polls the PassioGo API every 5 seconds and stores vehicle positions, current stop pair index, elapsed time at position, and academic calendar context to a local SQLite database. Only vehicles in DETERMINED tracking state are logged — positions during cold start resolution are excluded to keep training data clean. This data will be used to train the break prediction model after sufficient coverage across different academic periods.
+A logging script polls PassioGo every 5 seconds and saves original reports before
+tracking, including uncertain, repeated, and out-of-service reports. Completed
+movement and stop measurements use explicit event boundaries and route versions.
+The estimator learns from up to eight weeks of version-matched history and recent
+fleet observations. Old measurement tables remain intact and are excluded from
+new training because their route layout and label quality cannot be established.
+See [ACCURACY.md](ACCURACY.md) for recording, replay, and validation commands.
 
 ## Why Not Just Use PassioGo?
 

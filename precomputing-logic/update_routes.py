@@ -12,6 +12,7 @@ import argparse
 import json
 import sqlite3
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from math import atan2, cos, degrees, radians, sin, sqrt
@@ -42,6 +43,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             system_id INTEGER,
             route_name TEXT,
             color TEXT,
+            version INTEGER NOT NULL DEFAULT 1,
             UNIQUE(system_id, route_name)
         );
         CREATE TABLE IF NOT EXISTS stops (
@@ -60,11 +62,39 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             dest_stop_id TEXT,
             road_distance_m REAL,
             road_duration_s REAL,
-            UNIQUE(route_graph_id, origin_stop_id, dest_stop_id)
+            bearing REAL,
+            is_complex_zone INTEGER DEFAULT 0,
+            shape_points TEXT,
+            UNIQUE(route_graph_id, position)
         );
         """
     )
-    conn.commit()
+    # This migration runs only when the NEW updater is explicitly started.
+    # Editing this file does not alter an already-running updater's database.
+    with conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if 'version' not in table_columns(conn, 'route_graphs'):
+            conn.execute('ALTER TABLE route_graphs ADD COLUMN version INTEGER NOT NULL DEFAULT 1')
+        for name, definition in [('bearing', 'REAL'), ('is_complex_zone', 'INTEGER DEFAULT 0'), ('shape_points', 'TEXT')]:
+            if name not in table_columns(conn, 'stop_pairs'):
+                conn.execute(f'ALTER TABLE stop_pairs ADD COLUMN {name} {definition}')
+        # Ordered occurrences, rather than stop IDs, identify route sections.
+        old_unique = any(
+            [row[2] for row in conn.execute(f'PRAGMA index_info("{index[1]}")')]
+            == ['route_graph_id', 'origin_stop_id', 'dest_stop_id']
+            for index in conn.execute('PRAGMA index_list(stop_pairs)').fetchall() if index[2]
+        )
+        if old_unique:
+            conn.execute('''CREATE TABLE stop_pairs_occurrences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, route_graph_id INTEGER,
+                position INTEGER, origin_stop_id TEXT, dest_stop_id TEXT,
+                road_distance_m REAL, road_duration_s REAL, bearing REAL,
+                is_complex_zone INTEGER DEFAULT 0, shape_points TEXT,
+                UNIQUE(route_graph_id, position))''')
+            columns = 'id,route_graph_id,position,origin_stop_id,dest_stop_id,road_distance_m,road_duration_s,bearing,is_complex_zone,shape_points'
+            conn.execute(f'INSERT INTO stop_pairs_occurrences({columns}) SELECT {columns} FROM stop_pairs')
+            conn.execute('DROP TABLE stop_pairs')
+            conn.execute('ALTER TABLE stop_pairs_occurrences RENAME TO stop_pairs')
 
 
 def route_stops(route: Any, stops: list[Any]) -> list[Any]:
@@ -76,9 +106,12 @@ def route_stops(route: Any, stops: list[Any]) -> list[Any]:
             for key, value in getattr(stop, "routesAndPositions", {}).items()
         }
         if route_key in memberships:
-            ordered.append((memberships[route_key][0], stop))
+            ordered.extend((position, stop) for position in memberships[route_key])
     ordered.sort(key=lambda item: item[0])
-    return [stop for _, stop in ordered]
+    result = [stop for _, stop in ordered]
+    if len(result) > 1 and str(result[0].id) == str(result[-1].id):
+        result.pop()  # Closure is represented by the final -> first segment.
+    return result
 
 
 def best_routes(system: Any, stops: list[Any]) -> list[Any]:
@@ -165,7 +198,7 @@ def refresh_route(
     timeout_s: float,
     delay_s: float,
     dry_run: bool,
-) -> None:
+) -> bool:
     segments = [
         (ordered_stops[index], ordered_stops[(index + 1) % len(ordered_stops)])
         for index in range(len(ordered_stops))
@@ -186,7 +219,15 @@ def refresh_route(
             )
     results.sort()
     if dry_run:
-        return
+        return False
+
+    previous = conn.execute('''SELECT position,origin_stop_id,dest_stop_id,
+        road_distance_m,road_duration_s,shape_points FROM stop_pairs
+        WHERE route_graph_id=? ORDER BY position''', (route_graph_id,)).fetchall()
+    def canonical(rows):
+        return [(row[0], str(row[1]), str(row[2]), round(row[3], 3), round(row[4], 3),
+                 json.loads(row[5]) if row[5] else None) for row in rows]
+    geometry_changed = canonical(previous) != canonical(results)
 
     columns = table_columns(conn, "stop_pairs")
     conn.execute("DELETE FROM stop_pairs WHERE route_graph_id = ?", (route_graph_id,))
@@ -238,6 +279,7 @@ def refresh_route(
             f"INSERT INTO stop_pairs ({','.join(insert_columns)}) VALUES ({placeholders})",
             values,
         )
+    return geometry_changed
 
 
 def update_system(
@@ -248,6 +290,7 @@ def update_system(
     timeout_s: float,
     delay_s: float,
     dry_run: bool,
+    force_geometry: bool = False,
 ) -> tuple[int, int, int]:
     system_id = int(system.id)
     stops = system.getStops()
@@ -277,6 +320,7 @@ def update_system(
     current_names = {route.name for route in routes}
     removed = len(set(existing_routes) - current_names)
     affected: list[tuple[Any, int, list[Any]]] = []
+    layout_changed = {}
     for route in routes:
         ordered = route_stops(route, stops)
         if len(ordered) < 2:
@@ -288,9 +332,10 @@ def update_system(
         else:
             current_sequence = existing_sequence(conn, route_graph_id)
         new_sequence = [str(stop.id) for stop in ordered]
-        route_changed = current_sequence != new_sequence or any(
+        layout_changed[route.name] = current_sequence != new_sequence or any(
             str(stop.id) in changed_stop_ids for stop in ordered
         )
+        route_changed = force_geometry or layout_changed[route.name]
         if route_changed:
             affected.append((route, route_graph_id, ordered))
 
@@ -338,12 +383,13 @@ def update_system(
                 (system_id, route.name, route.groupColor),
             )
         for route, route_graph_id, ordered in affected:
+            is_new = route_graph_id == -1
             if route_graph_id == -1:
                 route_graph_id = conn.execute(
                     "SELECT id FROM route_graphs WHERE system_id = ? AND route_name = ?",
                     (system_id, route.name),
                 ).fetchone()[0]
-            refresh_route(
+            geometry_changed = refresh_route(
                 conn,
                 route_graph_id,
                 ordered,
@@ -353,6 +399,8 @@ def update_system(
                 delay_s,
                 False,
             )
+            if not is_new and (geometry_changed or layout_changed[route.name]):
+                conn.execute('UPDATE route_graphs SET version=version+1 WHERE id=?', (route_graph_id,))
         conn.execute(
             "UPDATE systems SET precomputed = 1 WHERE system_id = ?", (system_id,)
         )
@@ -372,15 +420,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--delay", type=float, default=DEFAULT_REQUEST_DELAY_S)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument('--refresh-geometry', action='store_true',
+                        help='Refetch paths even when stops are unchanged; versions change only if the layout changes')
+    parser.add_argument('--migrate-only', action='store_true',
+                        help='Initialize version/occurrence columns without API requests; run after the old updater finishes')
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if args.dry_run and args.migrate_only:
+        raise SystemExit('--dry-run and --migrate-only cannot be combined')
     if args.workers < 1 or args.delay < 0:
         raise SystemExit("--workers must be positive and --delay cannot be negative")
-    conn = sqlite3.connect(args.db, timeout=30)
-    ensure_schema(conn)
+    if args.dry_run:
+        conn = sqlite3.connect(Path(args.db).resolve().as_uri() + '?mode=ro', uri=True, timeout=30)
+    else:
+        conn = sqlite3.connect(args.db, timeout=30)
+        ensure_schema(conn)
+    if args.migrate_only:
+        conn.close()
+        print('Route schema ready. Existing routes start at version 1; no route paths were changed.')
+        return
     systems = passiogo.getSystems()
     if args.system_id is not None:
         systems = [system for system in systems if int(system.id) == args.system_id]
@@ -397,6 +458,7 @@ def main() -> None:
                 args.timeout,
                 args.delay,
                 args.dry_run,
+                args.refresh_geometry,
             )
             totals = [left + right for left, right in zip(totals, values)]
     finally:
