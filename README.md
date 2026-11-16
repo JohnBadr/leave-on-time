@@ -90,6 +90,13 @@ fleet observations. Old measurement tables remain intact and are excluded from
 new training because their route layout and label quality cannot be established.
 See [ACCURACY.md](ACCURACY.md) for recording, replay, and validation commands.
 
+To compare live tracking with PassioGo locally, download a completed server backup
+and run `python watch_tracker.py` (optionally `--route Red` or `--vehicle BUS_ID`).
+It creates private route/history copies in `Documents/LeaveOnTime-LocalTests` and
+uses the recorder's shared pipeline with a console view of positions and next-stop
+ETAs. `logger.py --watch` enables the same display for an explicitly chosen recorder
+database. The default server recorder remains quiet.
+
 ## Why Not Just Use PassioGo?
 
 PassioGo shows you where the bus is right now — you still have to check it yourself every morning and do the math. LeaveOnTime tells you when to leave your door. The distinction matters when you factor in:

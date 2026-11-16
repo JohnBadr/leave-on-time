@@ -1,4 +1,5 @@
 import hashlib
+import gzip
 import importlib.util
 import json
 import sqlite3
@@ -9,7 +10,8 @@ import subprocess
 import sys
 import time
 from datetime import datetime
-from contextlib import closing
+from contextlib import closing, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -461,6 +463,23 @@ class CommandLineTests(unittest.TestCase):
         eta.set_calibration_provider(None)
         self.tmp.cleanup()
 
+    def completed_backup(self, stamp='20261028T070144851920Z'):
+        folder = self.root / 'downloads' / stamp
+        folder.mkdir(parents=True)
+        history = self.root / 'history.db'
+        store = ObservationStore(history)
+        store.close()
+        manifest = {'files': {}}
+        for name, source in [('routegraph.db', self.graph), ('bullrunner.db', history)]:
+            compressed = folder / (name + '.gz')
+            with source.open('rb') as src, compressed.open('wb') as output:
+                with gzip.GzipFile(filename=name + '.gz.partial', fileobj=output, mode='wb') as dst:
+                    dst.write(src.read())
+            manifest['files'][compressed.name] = {'sha256': hashlib.sha256(compressed.read_bytes()).hexdigest()}
+        (folder / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+        (folder / 'COMPLETE').write_text('complete', encoding='utf-8')
+        return folder
+
     def test_module_imports_create_no_databases(self):
         env = dict(os.environ, PYTHONPATH=str(Path(__file__).parents[1]))
         working = self.root / 'imports'
@@ -484,6 +503,87 @@ class CommandLineTests(unittest.TestCase):
         report = subprocess.run([sys.executable, '-B', str(Path(__file__).parents[1] / 'evaluation.py'),
             'report', '--db', str(output), '--quality', 'automatic'], capture_output=True, text=True, check=True)
         self.assertIn('prediction_availability', json.loads(report.stdout))
+
+    def test_watch_filters_display_without_dropping_raw_reports(self):
+        import logger
+        output = self.root / 'watch.db'
+        now = time.time()
+        client = SimpleNamespace(getVehicles=lambda: [vehicle(now, identifier='red-bus'),
+            vehicle(now, name='Blue', identifier='blue-bus')], close=lambda: None)
+        printed = StringIO()
+        before = self.graph.read_bytes()
+        with patch.object(logger, 'PassioClient', return_value=client), patch.object(logger.signal, 'signal'), redirect_stdout(printed):
+            logger.main(['--route-db', str(self.graph), '--db', str(output), '--duration', '.2',
+                         '--watch', '--watch-route', 'red', '--watch-vehicle', 'red-bus'])
+        self.assertIn('Red | bus red-bus', printed.getvalue())
+        self.assertIn('Next stop:', printed.getvalue())
+        self.assertIn('ETA ', printed.getvalue())
+        self.assertNotIn('Blue | bus blue-bus', printed.getvalue())
+        self.assertEqual(self.graph.read_bytes(), before)
+        with closing(sqlite3.connect(output)) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM raw_vehicle_reports').fetchone()[0], 2)
+
+    def test_watch_at_stop_displays_eta_to_following_stop(self):
+        import logger
+        sequence = route()
+        for index, pair in enumerate(sequence):
+            sequence[index] = (*pair[:13], f'Stop {index + 1}')
+        v = vehicle(BASE)
+        state = new_state(v, 'Red', BASE)
+        process_fix(state, v, sequence, BASE)
+        state.update(index=0, stop_arrival_time=BASE - 10, progress_pct=1)
+        with patch.object(logger, '_compute_vehicle_eta', return_value={'time_to_dest_s': 95, 'status': 'uncertain'}) as predict:
+            result = logger.format_watch_status(2343, v, state, sequence, BASE)
+        self.assertEqual(predict.call_args.args[3], 1)
+        self.assertIn('At stop: Stop 1', result)
+        self.assertIn('Next stop: Stop 2 | ETA 1m 35s (uncertain)', result)
+
+    def test_watch_unknown_does_not_fabricate_eta(self):
+        import logger
+        v = vehicle(BASE)
+        with patch.object(logger, '_compute_vehicle_eta', side_effect=AssertionError('unresolved ETA')):
+            result = logger.format_watch_status(2343, v, new_state(v, 'Red', BASE), route(), BASE)
+        self.assertIn('UNKNOWN', result)
+        self.assertIn('ETA unavailable', result)
+
+    def test_local_tracker_seeds_new_copy_and_preserves_download(self):
+        import logger
+        import watch_tracker
+        source = self.completed_backup()
+        original = {p.name: p.read_bytes() for p in source.iterdir() if p.is_file()}
+        output_root = self.root / 'local-tests'
+        client = SimpleNamespace(getVehicles=lambda: [vehicle(time.time())], close=lambda: None)
+        printed = StringIO()
+        with patch.object(logger, 'PassioClient', return_value=client), patch.object(logger.signal, 'signal'), redirect_stdout(printed):
+            watch_tracker.main(['--backup-root', str(source.parent), '--output-root', str(output_root),
+                                '--route', 'Red', '--duration', '.2'])
+        run, = output_root.iterdir()
+        self.assertIn(str(run), printed.getvalue())
+        self.assertIn('DETERMINED', printed.getvalue())
+        self.assertEqual({p.name: p.read_bytes() for p in source.iterdir() if p.is_file()}, original)
+        with closing(sqlite3.connect(run / 'bullrunner.db')) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM raw_vehicle_reports').fetchone()[0], 1)
+            self.assertGreater(conn.execute('SELECT COUNT(*) FROM eta_predictions').fetchone()[0], 0)
+
+    def test_local_tracker_selects_newest_completed_backup(self):
+        import watch_tracker
+        self.completed_backup('20261027T070144851920Z')
+        source = self.completed_backup()
+        incomplete = source.parent / '20261029T070144851920Z'
+        incomplete.mkdir()
+        run, selected = watch_tracker.prepare_local_run(source.parent, self.root / 'local-tests')
+        self.assertEqual(selected, source)
+        self.assertTrue((run / 'routegraph.db').is_file())
+        self.assertTrue((run / 'bullrunner.db').is_file())
+
+    def test_local_tracker_rejects_bad_checksum_before_creating_output(self):
+        import watch_tracker
+        source = self.completed_backup()
+        (source / 'bullrunner.db.gz').write_bytes(b'broken transfer')
+        output_root = self.root / 'local-tests'
+        with self.assertRaisesRegex(ValueError, 'checksum failed'):
+            watch_tracker.prepare_local_run(source.parent, output_root)
+        self.assertFalse(output_root.exists())
 
     def test_recorder_keeps_raw_report_when_route_is_locked(self):
         import logger
